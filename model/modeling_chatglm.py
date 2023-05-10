@@ -1404,8 +1404,10 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
         dur = (end - start) * 1000
         self.duration += dur
         if self.forward_count == 1:
-            print("forward count: %d [%.4f ms]" % (self.forward_count, dur))
-        print("forward count: %d [whole dur: %.4f ms]" % (self.forward_count, self.duration))
+            print("--------------------------------")
+            print("prefill stage: %.4f ms" % (dur))
+            print("--------------------------------")
+        # print("forward count: %d [whole dur: %.4f ms]" % (self.forward_count, self.duration))
 
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
@@ -1423,9 +1425,6 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
         else:
             init_method = default_init
 
-        # self.hidden_size = config.hidden_size
-        # self.params_dtype = torch.half
-        # self.vocab_size = config.vocab_size
         self.max_sequence_length = config.max_sequence_length
 
         self.position_encoding_2d = config.position_encoding_2d
@@ -1536,7 +1535,7 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
             }
         else:
             if attention_mask is not None and attention_mask.dtype != torch.bool:
-                logger.warning_once(f"The dtype of attention mask ({attention_mask.dtype}) is not bool")
+                # logger.warning_once(f"The dtype of attention mask ({attention_mask.dtype}) is not bool")
                 attention_mask = None
             if attention_mask is None:
                 attention_mask = self.get_masks(
@@ -1821,3 +1820,5 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
 
         self.transformer = quantize(self.transformer, bits, empty_init=empty_init, **kwargs)
         return self
+
+

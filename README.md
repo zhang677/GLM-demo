@@ -2,14 +2,20 @@
   Efficient implementation of LLM model GLM. Now the chatGLM-6B engine has been developed based on ByteTransformer.
 
 ### Requirement
-  Please refer to [chatGLM-6B](https://github.com/THUDM/ChatGLM-6B) and [ByteTransformer](https://github.com/bytedance/ByteTransformer).
+  Reference: [chatGLM-6B](https://github.com/THUDM/ChatGLM-6B) and [ByteTransformer](https://github.com/bytedance/ByteTransformer).
+```
+  pip install -r requirements.txt
+```
 
 ### Run
+  Use optimized engine: 
 ```
-  python chatglm-test.py
+  python chatglm-test.py --seq-len={128, 256, 512, 1024} --engine-use
 ```
-
-  In the file ```chatglm-test.py```, seq len can be set to ```8, 16, 128, 256, 512``` by hand and the using of the engine can be switched on through ```engine_use``` in the config.
+  Run baseline:
+```
+  python chatglm-test.py --seq-len={128, 256, 512, 1024}
+```
 
 ### Features
   1. Residual structure with factor alpha.
@@ -21,5 +27,5 @@
 
 ### TODO
   1. Single operator wrapper for convenience. 
-  2. Weight layout change in the backend.
+  2. Weight layout change in the backend. Weight layout adjustment costs 10% runtime in prefill stage.
   3. Fix fused attention kernel for large dim and rotary embedding.
