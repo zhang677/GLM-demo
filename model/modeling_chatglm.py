@@ -639,6 +639,9 @@ class GLMBlock(torch.nn.Module):
             empty_init=empty_init
         )
 
+        self.attention_query_key_value_weight = torch.empty((1), dtype=torch.half)
+        self.attention_dense_weight = torch.empty((1), dtype=torch.half)
+
         # Layernorm on the input data.
         self.post_attention_layernorm = layernorm(hidden_size, eps=layernorm_epsilon)
 
@@ -653,6 +656,9 @@ class GLMBlock(torch.nn.Module):
             params_dtype=params_dtype,
             empty_init=empty_init
         )
+        self.dense_h_to_4h_weight = torch.empty((1), dtype=torch.half)
+        self.dense_4h_to_h_weight = torch.empty((1), dtype=torch.half)
+
     def forward(
             self,
             hidden_states: torch.Tensor,
@@ -778,8 +784,8 @@ class GLMBlockByte(torch.nn.Module):
             empty_init=empty_init
         )
 
-        # self.attention_query_key_value_weight = torch.empty((hidden_size, hidden_size * 3), dtype=torch.half)
-        # self.attention_dense_weight = torch.empty((hidden_size, hidden_size), dtype=torch.half)
+        self.attention_query_key_value_weight = torch.empty((1), dtype=torch.half)
+        self.attention_dense_weight = torch.empty((1), dtype=torch.half)
     
         # Layernorm on the input data.
         self.post_attention_layernorm = layernorm(hidden_size, eps=layernorm_epsilon)
@@ -799,8 +805,8 @@ class GLMBlockByte(torch.nn.Module):
             params_dtype=params_dtype,
             empty_init=empty_init
         )
-        # self.dense_h_to_4h_weight = torch.empty((hidden_size, hidden_size * 4), dtype=torch.half)
-        # self.dense_4h_to_h_weight = torch.empty((hidden_size * 4, hidden_size), dtype=torch.half)
+        self.dense_h_to_4h_weight = torch.empty((1), dtype=torch.half)
+        self.dense_4h_to_h_weight = torch.empty((1), dtype=torch.half)
 
 
         torch.ops.load_library('./lib/libths_bytetransformer.so')
@@ -836,10 +842,22 @@ class GLMBlockByte(torch.nn.Module):
             if layer_id == 0 and forward_count == 1:
                 print("seq len: ", seq_len)
 
-            query_key_value_weight = self.attention.query_key_value.weight.transpose(0, 1).contiguous()
-            attention_dense_weight = self.attention.dense.weight.transpose(0, 1).contiguous()
-            dense_h_to_4h_weight = self.mlp.dense_h_to_4h.weight.transpose(0, 1).contiguous()
-            dense_4h_to_h_weight = self.mlp.dense_4h_to_h.weight.transpose(0, 1).contiguous()
+            if seq_len <= 256:
+                hidden_states, qkv_cache = torch.ops.ByteTransformer.BertTransformer(
+                    self.num_attention_heads, self.hidden_size_per_attention_head, self.num_layers, 
+                    self.attention_query_key_value_weight, self.attention.query_key_value.bias, 
+                    self.attention_dense_weight, self.attention.dense.bias,
+                    self.input_layernorm.weight, self.input_layernorm.bias,
+                    self.dense_h_to_4h_weight, self.mlp.dense_h_to_4h.bias, 
+                    self.dense_4h_to_h_weight, self.mlp.dense_4h_to_h.bias,
+                    self.post_attention_layernorm.weight, self.post_attention_layernorm.bias,
+                    hidden_states, attention_mask,
+                    False, False)
+            elif seq_len <= 1024:
+                query_key_value_weight = self.attention.query_key_value.weight.transpose(0, 1).contiguous()
+                attention_dense_weight = self.attention.dense.weight.transpose(0, 1).contiguous()
+                dense_h_to_4h_weight = self.mlp.dense_h_to_4h.weight.transpose(0, 1).contiguous()
+                dense_4h_to_h_weight = self.mlp.dense_4h_to_h.weight.transpose(0, 1).contiguous()
 
             # out1 = F.layer_norm(hidden_states, (hidden_size, ),
             #                              weight=self.input_layernorm.weight, bias=self.input_layernorm.bias,
@@ -859,26 +877,18 @@ class GLMBlockByte(torch.nn.Module):
             
             # fake_k = fake_k.permute(1, 0, 2, 3).contiguous()
 
-            '''hidden_states, qkv_cache = torch.ops.ByteTransformer.BertTransformer(
-                self.num_attention_heads, self.hidden_size_per_attention_head, self.num_layers, 
-                self.attention_query_key_value_weight, self.attention.query_key_value.bias, 
-                self.attention_dense_weight, self.attention.dense.bias,
-                self.input_layernorm.weight, self.input_layernorm.bias,
-                self.dense_h_to_4h_weight, self.mlp.dense_h_to_4h.bias, 
-                self.dense_4h_to_h_weight, self.mlp.dense_4h_to_h.bias,
-                self.post_attention_layernorm.weight, self.post_attention_layernorm.bias,
-                hidden_states, attention_mask,
-                False, False)'''
-            hidden_states, qkv_cache = torch.ops.ByteTransformer.BertTransformer(
-                self.num_attention_heads, self.hidden_size_per_attention_head, self.num_layers, 
-                query_key_value_weight, self.attention.query_key_value.bias, 
-                attention_dense_weight, self.attention.dense.bias,
-                self.input_layernorm.weight, self.input_layernorm.bias,
-                dense_h_to_4h_weight, self.mlp.dense_h_to_4h.bias, 
-                dense_4h_to_h_weight, self.mlp.dense_4h_to_h.bias,
-                self.post_attention_layernorm.weight, self.post_attention_layernorm.bias,
-                hidden_states, attention_mask,
-                False, False)
+                hidden_states, qkv_cache = torch.ops.ByteTransformer.BertTransformer(
+                    self.num_attention_heads, self.hidden_size_per_attention_head, self.num_layers, 
+                    query_key_value_weight, self.attention.query_key_value.bias, 
+                    attention_dense_weight, self.attention.dense.bias,
+                    self.input_layernorm.weight, self.input_layernorm.bias,
+                    dense_h_to_4h_weight, self.mlp.dense_h_to_4h.bias, 
+                    dense_4h_to_h_weight, self.mlp.dense_4h_to_h.bias,
+                    self.post_attention_layernorm.weight, self.post_attention_layernorm.bias,
+                    hidden_states, attention_mask,
+                    False, False)
+            else:
+                raise NotImplementedError
         
             output = hidden_states.reshape((batch_size, seq_len, -1))
 
@@ -1169,6 +1179,7 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
         self.forward_count = 0
         self.duration = 0
         self.block_class = GLMBlockByte if config.engine_use else GLMBlock
+        self.tiny = config.tiny
 
         self.word_embeddings = init_method(
             torch.nn.Embedding,
@@ -1195,25 +1206,6 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
         self.layers = torch.nn.ModuleList(
             [get_layer(layer_id) for layer_id in range(self.num_layers)]
         )
-
-        # def get_layer_byte(layer_id):
-        #     return GLMBlockByte(
-        #         self.hidden_size,
-        #         self.num_attention_heads,
-        #         self.layernorm_epsilon,
-        #         layer_id,
-        #         inner_hidden_size=self.inner_hidden_size,
-        #         hidden_size_per_attention_head=self.hidden_size_per_attention_head,
-        #         layernorm=LayerNorm,
-        #         use_bias=True,
-        #         params_dtype=self.params_dtype,
-        #         position_encoding_2d=self.position_encoding_2d,
-        #         empty_init=empty_init
-        #     )
-    
-        # self.layers_byte = torch.nn.ModuleList(
-        #     [get_layer_byte(layer_id) for layer_id in range(self.num_layers)]
-        # )
 
         # Final layer norm before output.
         self.final_layernorm = LayerNorm(self.hidden_size, eps=self.layernorm_epsilon)
