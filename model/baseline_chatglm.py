@@ -15,7 +15,6 @@ from torch import nn
 from torch.nn import CrossEntropyLoss, LayerNorm
 from torch.nn.utils import skip_init
 from typing import Optional, Tuple, Union, List, Callable, Dict, Any
-from ByteGLM.lib import gelu_cuda, embedding_cuda
 
 from transformers.utils import (
     add_code_sample_docstrings,
@@ -52,7 +51,6 @@ CHATGLM_6B_PRETRAINED_MODEL_ARCHIVE_LIST = [
     # See all ChatGLM-6B models at https://huggingface.co/models?filter=chatglm
 ]
 
-torch.random.manual_seed(999)
 
 class InvalidScoreLogitsProcessor(LogitsProcessor):
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
@@ -256,8 +254,6 @@ def attention_fn(
 ):
     if layer_past is not None:
         past_key, past_value = layer_past[0], layer_past[1]
-        # print("past_key: ", past_key.shape)
-        # print("key_layer: ", key_layer.shape)
         key_layer = torch.cat((past_key, key_layer), dim=0)
         value_layer = torch.cat((past_value, value_layer), dim=0)
 
@@ -271,8 +267,7 @@ def attention_fn(
 
     query_key_layer_scaling_coeff = float(layer_id + 1)
     if scaling_attention_score:
-        # query_layer = query_layer / (math.sqrt(hidden_size) * query_key_layer_scaling_coeff)
-        query_layer = query_layer / (math.sqrt(hidden_size))
+        query_layer = query_layer / (math.sqrt(hidden_size) * query_key_layer_scaling_coeff)
 
     # ===================================
     # Raw attention scores. [b, np, s, s]
@@ -312,7 +307,7 @@ def attention_fn(
             attention_scores.masked_fill_(attention_mask, -10000.0)
         dtype = attention_scores.dtype
         attention_scores = attention_scores.float()
-        # attention_scores = attention_scores * query_key_layer_scaling_coeff
+        attention_scores = attention_scores * query_key_layer_scaling_coeff
 
         attention_probs = F.softmax(attention_scores, dim=-1)
 
@@ -447,107 +442,35 @@ class SelfAttention(torch.nn.Module):
         attention_mask: [(1, 1), seq_len, seq_len]
         """
 
-        seq_len = hidden_states.size(0)
-        hidden_size = hidden_states.size(2)
-    
-        # torch.cuda.synchronize()
-        # l1_st = time.time()
         # [seq_len, batch, 3 * hidden_size]
         mixed_raw_layer = self.query_key_value(hidden_states)
-        # torch.cuda.synchronize()
-        # l1_ed = time.time()
-        # print("l1: %.4f ms" % ((l1_ed-l1_st)*1000))
 
-        # torch.cuda.synchronize()
-        # l2_st = time.time()
         # [seq_len, batch, 3 * hidden_size] --> [seq_len, batch, num_attention_heads, 3 * hidden_size_per_attention_head]
         new_tensor_shape = mixed_raw_layer.size()[:-1] + (
             self.num_attention_heads_per_partition,
             3 * self.hidden_size_per_attention_head,
         )
         mixed_raw_layer = mixed_raw_layer.view(*new_tensor_shape)
-        # torch.cuda.synchronize()
-        # l2_ed = time.time()
-        # print("l2: %.4f ms" % ((l2_ed-l2_st)*1000))
 
-        # torch.cuda.synchronize()
-        # l3_st = time.time()
         # [seq_len, batch, num_attention_heads, hidden_size_per_attention_head]
-        (query_layer, key_layer, value_layer) = self.split_tensor_along_last_dim(mixed_raw_layer, 3) 
-        # torch.cuda.synchronize()
-        # l3_ed = time.time()
-        # print("l3: %.4f ms" % ((l3_ed-l3_st)*1000))
+        (query_layer, key_layer, value_layer) = self.split_tensor_along_last_dim(mixed_raw_layer, 3)
 
-        # to_print = key_layer
-
-        # torch.cuda.synchronize()
-        # l4_st = time.time()
         if self.position_encoding_2d:
-            # print("Rotary embedding is done !")
-            # torch.cuda.synchronize()
-            # l1_st = time.time()
             q1, q2 = query_layer.chunk(2, dim=(query_layer.ndim - 1))
             k1, k2 = key_layer.chunk(2, dim=(key_layer.ndim - 1))
-            q1 = q1.contiguous()
-            q2 = q2.contiguous()
-            k1 = k1.contiguous()
-            k2 = k2.contiguous()
-            # torch.cuda.synchronize()
-            # l1_ed = time.time()
-            # print("l1: %.4f ms" % ((l1_ed-l1_st)*1000))
-
-            # torch.cuda.synchronize()
-            # l2_st = time.time()
             cos, sin = self.rotary_emb(q1, seq_len=position_ids.max() + 1)
-            # torch.cuda.synchronize()
-            # l2_ed = time.time()
-            # print("l2: %.4f ms" % ((l2_ed-l2_st)*1000))
-            # if layer_id == 0 and layer_past is None:
-            #     print(cos.shape)
-            #     print(cos)
-            # torch.cuda.synchronize()
-            # l3_st = time.time()
             position_ids, block_position_ids = position_ids[:, 0, :].transpose(0, 1).contiguous(), \
                 position_ids[:, 1, :].transpose(0, 1).contiguous()
-            # torch.cuda.synchronize()
-            # l3_ed = time.time()
-            # print("l3: %.4f ms" % ((l3_ed-l3_st)*1000))
-            # if layer_id == 0 and layer_past is None:
-            #     print(position_ids)
-            #     print(block_position_ids)
-            # torch.cuda.synchronize()
-            # l4_st = time.time()
-            # print(q1.shape)
-            # print(k1.shape)
-            # print(cos.shape)
-            # print(sin.shape)
-            # print(position_ids.shape)
-            embedding_cuda(q1, k1, cos, sin, position_ids.int())
-            embedding_cuda(q2, k2, cos, sin, block_position_ids.int())
-            # q1, k1 = apply_rotary_pos_emb_index(q1, k1, cos, sin, position_ids)
-            # q2, k2 = apply_rotary_pos_emb_index(q2, k2, cos, sin, block_position_ids)
-            # torch.cuda.synchronize()
-            # l4_ed = time.time()
-            # print("l4: %.4f ms" % ((l4_ed-l4_st)*1000))
-
-            # torch.cuda.synchronize()
-            # l5_st = time.time()
+            q1, k1 = apply_rotary_pos_emb_index(q1, k1, cos, sin, position_ids)
+            q2, k2 = apply_rotary_pos_emb_index(q2, k2, cos, sin, block_position_ids)
             query_layer = torch.concat([q1, q2], dim=(q1.ndim - 1))
             key_layer = torch.concat([k1, k2], dim=(k1.ndim - 1))
-            # torch.cuda.synchronize()
-            # l5_ed = time.time()
-            # print("l5: %.4f ms" % ((l5_ed-l5_st)*1000))
         else:
             position_ids = position_ids.transpose(0, 1)
             cos, sin = self.rotary_emb(value_layer, seq_len=position_ids.max() + 1)
             # [seq_len, batch, num_attention_heads, hidden_size_per_attention_head]
             query_layer, key_layer = apply_rotary_pos_emb_index(query_layer, key_layer, cos, sin, position_ids)
-        # torch.cuda.synchronize()
-        # l4_ed = time.time()
-        # print("l4: %.4f ms" % ((l4_ed-l4_st)*1000))
 
-        # torch.cuda.synchronize()
-        # l5_st = time.time()
         # [seq_len, batch, hidden_size]
         context_layer, present, attention_probs = attention_fn(
             self=self,
@@ -560,38 +483,6 @@ class SelfAttention(torch.nn.Module):
             layer_past=layer_past,
             use_cache=use_cache
         )
-        # torch.cuda.synchronize()
-        # l5_ed = time.time()
-        # print("l5: %.4f ms" % ((l5_ed-l5_st)*1000))
-
-        # if layer_id == 0 and layer_past is None:
-        #         print(query_layer.shape)
-        #         for s in range(seq_len):
-        #             for hn in range(self.num_attention_heads):
-        #                 for hs in range(self.hidden_size_per_attention_head):
-        #                     print("%.4f" % (query_layer[s, 0, hn, hs] / (math.sqrt(self.hidden_size_per_attention_head))), end=' ')
-                            # print("%.4f" % (key_layer[s, 0, hn, hs]), end=' ')
-        #                 print('')
-        
-        # if layer_id == 0:
-        #     print(context_layer.shape)
-        #     seq_len = context_layer.size(0)
-        #     hidden_dim = context_layer.size(2)
-        # print("use_cache: ", use_cache)
-        # print(outputs)
-        #     for s in range(seq_len):
-        #         for h in range(hidden_dim):
-        #             print("%.4f" % context_layer[s, 0, h], end=' ')
-        #         print('')
-
-        # if layer_id == 0 and layer_past is None:
-        #     print(context_layer.shape)
-        # print("use_cache: ", use_cache)
-        # print(outputs)
-        #     for s in range(seq_len):
-        #         for h in range(hidden_size):
-        #             print("%.4f" % context_layer[s, 0, h], end=' ')
-        #         print('')
 
         output = self.dense(context_layer)
 
@@ -599,8 +490,6 @@ class SelfAttention(torch.nn.Module):
 
         if output_attentions:
             outputs += (attention_probs,)
-
-        # print(output_attentions)
 
         return outputs  # output, present, attention_probs
 
@@ -656,8 +545,7 @@ class GLU(torch.nn.Module):
         # [seq_len, batch, inner_hidden_size]
         intermediate_parallel = self.dense_h_to_4h(hidden_states)
 
-        # intermediate_parallel = self.activation_func(intermediate_parallel)
-        gelu_cuda(intermediate_parallel)
+        intermediate_parallel = self.activation_func(intermediate_parallel)
 
         output = self.dense_4h_to_h(intermediate_parallel)
 
@@ -685,9 +573,6 @@ class GLMBlock(torch.nn.Module):
 
         self.layer_id = layer_id
 
-        self.num_attention_heads = num_attention_heads
-        self.hidden_size_per_attention_head = hidden_size_per_attention_head
-
         # Layernorm on the input data.
         self.input_layernorm = layernorm(hidden_size, eps=layernorm_epsilon)
 
@@ -705,9 +590,6 @@ class GLMBlock(torch.nn.Module):
             empty_init=empty_init
         )
 
-        self.attention_query_key_value_weight = torch.empty((1), dtype=torch.half)
-        self.attention_dense_weight = torch.empty((1), dtype=torch.half)
-
         # Layernorm on the input data.
         self.post_attention_layernorm = layernorm(hidden_size, eps=layernorm_epsilon)
 
@@ -722,8 +604,6 @@ class GLMBlock(torch.nn.Module):
             params_dtype=params_dtype,
             empty_init=empty_init
         )
-        self.dense_h_to_4h_weight = torch.empty((1), dtype=torch.half)
-        self.dense_4h_to_h_weight = torch.empty((1), dtype=torch.half)
 
     def forward(
             self,
@@ -734,24 +614,15 @@ class GLMBlock(torch.nn.Module):
             layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
             use_cache: bool = False,
             output_attentions: bool = False,
-            forward_count: int = 1
     ):
         """
         hidden_states: [seq_len, batch, hidden_size]
         attention_mask: [(1, 1), seq_len, seq_len]
         """
 
-        seq_len = hidden_states.size(0)
-        hidden_dim = hidden_states.size(2)
-
-        if layer_id == 0 and layer_past is None:
-            print("seq len: ", seq_len)
-
         # Layer norm at the begining of the transformer layer.
         # [seq_len, batch, hidden_size]
         attention_input = self.input_layernorm(hidden_states)
-
-        # [hk:] layernorm checked.
 
         # Self attention.
         attention_outputs = self.attention(
@@ -780,311 +651,17 @@ class GLMBlock(torch.nn.Module):
         # Second residual connection.
         output = mlp_input * alpha + mlp_output
 
-        # if layer_id == 0:
-        #     print("count: ", forward_count)
-        #     print(output.shape)
-        #     print(outputs[0][0].shape)
-        #     print(outputs[0][1].shape)
-        #     print('----------------------')
-        # if layer_id == 1:
-        #     print_shape = attention_mask.shape
-        #     print(print_shape)
-        #     print(attention_mask)
-        #     attention_mask = attention_mask.reshape((1, seq_len, seq_len)).contiguous()
-        #     print(attention_mask)
-        #     print('----------------------')
-        # print(output.shape)
-        #     print('----------------------')
-
-
         if use_cache:
             outputs = (output,) + outputs
         else:
             outputs = (output,) + outputs[1:]
 
         return outputs  # hidden_states, present, attentions
-    
-
-'''
-Interfaces for embedded engine.
-'''
-class GLMBlockByte(torch.nn.Module):
-    def __init__(
-            self,
-            hidden_size,
-            num_attention_heads,
-            layernorm_epsilon,
-            layer_id,
-            inner_hidden_size=None,
-            hidden_size_per_attention_head=None,
-            layernorm=LayerNorm,
-            use_bias=True,
-            params_dtype=torch.float,
-            num_layers=28,
-            position_encoding_2d=True,
-            empty_init=True
-    ):
-        super(GLMBlockByte, self).__init__()
-        # Set output layer initialization if not provided.
-
-        self.layer_id = layer_id
-
-        # Layernorm on the input data.
-        self.input_layernorm = layernorm(hidden_size, eps=layernorm_epsilon)
-        # self.input_layernorm_weight = torch.empty((hidden_size), dtype=torch.half)
-        # self.input_layernorm_bias = torch.empty((hidden_size), dtype=torch.half)
-
-
-        self.position_encoding_2d = position_encoding_2d
-        self.layernorm_eps = layernorm_epsilon
-
-        # Self attention.
-        self.attention = SelfAttention(
-            hidden_size,
-            num_attention_heads,
-            layer_id,
-            hidden_size_per_attention_head=hidden_size_per_attention_head,
-            bias=use_bias,
-            params_dtype=params_dtype,
-            position_encoding_2d=self.position_encoding_2d,
-            empty_init=empty_init
-        )
-
-        self.attention_query_key_value_weight = torch.empty((1), dtype=torch.half)
-        self.attention_dense_weight = torch.empty((1), dtype=torch.half)
-    
-        # Layernorm on the input data.
-        self.post_attention_layernorm = layernorm(hidden_size, eps=layernorm_epsilon)
-
-        self.num_layers = num_layers
-
-        # pass info for embedded engine
-        self.num_attention_heads = num_attention_heads
-        self.hidden_size_per_attention_head = hidden_size_per_attention_head
-
-        # GLU
-        self.mlp = GLU(
-            hidden_size,
-            inner_hidden_size=inner_hidden_size,
-            bias=use_bias,
-            layer_id=layer_id,
-            params_dtype=params_dtype,
-            empty_init=empty_init
-        )
-        self.dense_h_to_4h_weight = torch.empty((1), dtype=torch.half)
-        self.dense_4h_to_h_weight = torch.empty((1), dtype=torch.half)
-
-    def forward(
-            self,
-            hidden_states: torch.Tensor,
-            position_ids,
-            attention_mask: torch.Tensor,
-            layer_id,
-            layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-            use_cache: bool = False,
-            output_attentions: bool = False,
-            forward_count: int = 1
-    ):
-        """
-        hidden_states: [seq_len, batch, hidden_size]
-        attention_mask: [(1, 1), seq_len, seq_len]
-        """
-
-        if forward_count == 1:
-            hidden_states = hidden_states.permute(1, 0, 2).contiguous()
-            # print(hidden_states.dtype)
-            # hidden_states: [batch, seq_len, hidden_size]
-            batch_size = hidden_states.size(0)
-            seq_len = hidden_states.size(1)
-            hidden_size = hidden_states.size(2)
-            # conflicted defination of mask
-            attention_mask = ~attention_mask
-            attention_mask = attention_mask.reshape((1, seq_len, seq_len)).half()
-
-            if layer_id == 0 and forward_count == 1:
-                print("seq len: ", seq_len)
-
-            if seq_len <= 256:
-                hidden_states, qkv_cache = torch.ops.ByteTransformer.BertTransformer(
-                    self.num_attention_heads, self.hidden_size_per_attention_head, self.num_layers, 
-                    self.attention_query_key_value_weight, self.attention.query_key_value.bias, 
-                    self.attention_dense_weight, self.attention.dense.bias,
-                    self.input_layernorm.weight, self.input_layernorm.bias,
-                    self.dense_h_to_4h_weight, self.mlp.dense_h_to_4h.bias, 
-                    self.dense_4h_to_h_weight, self.mlp.dense_4h_to_h.bias,
-                    self.post_attention_layernorm.weight, self.post_attention_layernorm.bias,
-                    hidden_states, attention_mask,
-                    False, False)
-            elif seq_len <= 1024:
-                query_key_value_weight = self.attention.query_key_value.weight.transpose(0, 1).contiguous()
-                attention_dense_weight = self.attention.dense.weight.transpose(0, 1).contiguous()
-                dense_h_to_4h_weight = self.mlp.dense_h_to_4h.weight.transpose(0, 1).contiguous()
-                dense_4h_to_h_weight = self.mlp.dense_4h_to_h.weight.transpose(0, 1).contiguous()
-                # print(dense_4h_to_h_weight.shape)
-                # print(self.mlp.dense_4h_to_h.weight.shape)
-
-            # out1 = F.layer_norm(hidden_states, (hidden_size, ),
-            #                              weight=self.input_layernorm.weight, bias=self.input_layernorm.bias,
-            #                              eps=self.layernorm_eps)
-        
-            # fake_qkv = torch.matmul(out1, query_key_value_weight) + self.attention.query_key_value.bias
-
-            # fake_qkv = fake_qkv.reshape((batch_size, seq_len, 
-            #                              self.num_attention_heads, 3 * self.hidden_size_per_attention_head))
-
-            # print(fake_qkv.shape)
-
-            # fake_q, fake_k, fake_v = fake_qkv.chunk(3, dim=-1)
-
-            # fake_k = fake_k.reshape((batch_size, seq_len, 
-            #              self.num_attention_heads, self.hidden_size_per_attention_head))
-            
-            # fake_k = fake_k.permute(1, 0, 2, 3).contiguous()
-
-                hidden_states, qkv_cache = torch.ops.ByteTransformer.BertTransformer(
-                    self.num_attention_heads, self.hidden_size_per_attention_head, self.num_layers, 
-                    query_key_value_weight, self.attention.query_key_value.bias, 
-                    attention_dense_weight, self.attention.dense.bias,
-                    self.input_layernorm.weight, self.input_layernorm.bias,
-                    dense_h_to_4h_weight, self.mlp.dense_h_to_4h.bias, 
-                    dense_4h_to_h_weight, self.mlp.dense_4h_to_h.bias,
-                    self.post_attention_layernorm.weight, self.post_attention_layernorm.bias,
-                    hidden_states, attention_mask,
-                    False, False)
-            else:
-                raise NotImplementedError
-        
-            output = hidden_states.reshape((batch_size, seq_len, -1))
-
-            # to_print = qkv_cache[0:seq_len * hidden_size]
-            # to_print = to_print.reshape((batch_size, seq_len, hidden_size))
-            # if layer_id == 0 and forward_count == 1:
-            #     print(to_print.shape)
-            #     for s in range(seq_len):
-            #         for h in range(hidden_size):
-            #             print("%.4f" % to_print[0, s, h], end=' ')
-            #         print('')
-
-            # Split.
-            qkv_cache = qkv_cache.reshape((batch_size, seq_len, 
-                                           self.num_attention_heads, 3 * self.hidden_size_per_attention_head))
-            _, raw_key, raw_value = qkv_cache.chunk(3, dim=-1)
-            # Note: torch.split does not create contiguous tensors by default.
-            # raw_query = raw_query.contiguous()
-            # raw_key = raw_key.contiguous()
-            # raw_value = raw_value.contiguous()
-
-            # qkv_cache = qkv_cache.reshape((batch_size, seq_len, 3, hidden_size))
-            # key_layer = qkv_cache[:, :, 1, :].reshape((batch_size, seq_len, 
-            #                                            self.num_attention_heads, self.hidden_size_per_attention_head))
-            # value_layer = qkv_cache[:, :, 2, :].reshape((batch_size, seq_len, 
-            #                                              self.num_attention_heads, self.hidden_size_per_attention_head))
-            # query_layer = raw_query.reshape((batch_size, seq_len, 
-            #                                           self.num_attention_heads, self.hidden_size_per_attention_head))
-            key_layer = raw_key.reshape((batch_size, seq_len, 
-                                                      self.num_attention_heads, self.hidden_size_per_attention_head))
-            value_layer = raw_value.reshape((batch_size, seq_len, 
-                                                      self.num_attention_heads, self.hidden_size_per_attention_head))
-
-            # TODO: permutation for output and qkv
-            # "contiguous" check can be removed.
-            output = output.permute(1, 0, 2)
-            # query_layer = query_layer.permute(1, 0, 2, 3).contiguous()
-            key_layer = key_layer.permute(1, 0, 2, 3).contiguous()
-            value_layer = value_layer.permute(1, 0, 2, 3).contiguous()
-            # hidden_states: [seq_len, batch, hidden_size]
-        
-            outputs = ((key_layer, value_layer), )
-
-            # if layer_id == 0 and forward_count == 1:
-            #     print(output.shape)
-            #     for s in range(seq_len):
-            #         for h in range(hidden_size):    
-            #             print("%.4f" % output[s, 0, h], end=' ')
-            #         print('')
-
-
-            # if layer_id == 0 and forward_count == 1:
-            #     print(output.shape)
-            #     for s in range(seq_len):
-            #         for b in range(batch_size):
-            #             for h in range(hidden_size):
-            #                 print("%.4f" % output[s, b, h], end=' ')
-            #         print('')
-
-            if use_cache:
-                outputs = (output,) + outputs
-            else:
-                outputs = (output,)
-        
-        
-        else:
-
-            seq_len = hidden_states.size(0)
-            hidden_dim = hidden_states.size(2)
-
-            # Layer norm at the begining of the transformer layer.
-            # [seq_len, batch, hidden_size]
-
-            attention_input = self.input_layernorm(hidden_states)
-
-            # [hk:] layernorm checked.
-
-            # Self attention.
-            attention_outputs = self.attention(
-                attention_input,
-                position_ids,
-                attention_mask=attention_mask,
-                layer_id=layer_id,
-                layer_past=layer_past,
-                use_cache=use_cache,
-                output_attentions=output_attentions
-            )
-
-            attention_output = attention_outputs[0]
-
-            outputs = attention_outputs[1:]
-
-            # Residual connection.
-            alpha = (2 * self.num_layers) ** 0.5
-            hidden_states = attention_input * alpha + attention_output
-
-            mlp_input = self.post_attention_layernorm(hidden_states)
-
-            # MLP.
-            mlp_output = self.mlp(mlp_input)
-
-            # Second residual connection.
-            output = mlp_input * alpha + mlp_output
-
-            # if layer_id == 0:
-            #     print("count: ", forward_count)
-            #     print(output.shape)
-            #     print(outputs[0][0].shape)
-            #     print(outputs[0][1].shape)
-            #     print('----------------------')
-            # if layer_id == 1:
-            #     print_shape = attention_mask.shape
-            #     print(print_shape)
-            #     print(attention_mask)
-            #     attention_mask = attention_mask.reshape((1, seq_len, seq_len)).contiguous()
-            #     print(attention_mask)
-            #     print('----------------------')
-            # print(output.shape)
-            #     print('----------------------')
-
-            if use_cache:
-                outputs = (output,) + outputs
-            else:
-                outputs = (output,) + outputs[1:]
-    
-        
-        return outputs  # hidden_states, present, attentions'''
 
 
 class ChatGLMPreTrainedModel(PreTrainedModel):
     """
-    An abstract class to handle weights initialization ands
+    An abstract class to handle weights initialization and
     a simple interface for downloading and loading pretrained models.
     """
 
@@ -1132,7 +709,7 @@ class ChatGLMPreTrainedModel(PreTrainedModel):
             position_ids = torch.arange(seq_length, dtype=torch.long, device=device).unsqueeze(0).repeat(batch_size, 1)
             for i, context_length in enumerate(context_lengths):
                 if not use_gmasks[i]:
-                    position_ids[context_length:] = mask_positions[i]
+                    position_ids[i, context_length:] = mask_positions[i]
 
         return position_ids
 
@@ -1145,7 +722,6 @@ CHATGLM_6B_START_DOCSTRING = r"""
     This model is a PyTorch [torch.nn.Module](https://pytorch.org/docs/stable/nn.html#torch.nn.Module) sub-class.
     Use it as a regular PyTorch Module and refer to the PyTorch documentation for all matter related to general
     usage and behavior.
-
     Parameters:
         config ([`~ChatGLM6BConfig`]): Model configuration class with all the parameters of the model.
             Initializing with a config file does not load the weights associated with the model, only the configuration.
@@ -1156,37 +732,28 @@ CHATGLM_6B_INPUTS_DOCSTRING = r"""
     Args:
         input_ids (`torch.LongTensor` of shape `({0})`):
             Indices of input sequence tokens in the vocabulary.
-
             Indices can be obtained using [`ChatGLM6BTokenizer`].
             See [`PreTrainedTokenizer.encode`] and
             [`PreTrainedTokenizer.__call__`] for details.
-
             [What are input IDs?](../glossary#input-ids)
         attention_mask (`torch.FloatTensor` of shape `({0})`, *optional*):
             Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
-
             - 1 for tokens that are **not masked**,
             - 0 for tokens that are **masked**.
-
             [What are attention masks?](../glossary#attention-mask)
         token_type_ids (`torch.LongTensor` of shape `({0})`, *optional*):
             Segment token indices to indicate first and second portions of the inputs. Indices are selected in `[0, 1]`:
-
             - 0 corresponds to a *sentence A* token,
             - 1 corresponds to a *sentence B* token.
-
             [What are token type IDs?](../glossary#token-type-ids)
         position_ids (`torch.LongTensor` of shape `({0})`, *optional*):
             Indices of positions of each input sequence tokens in the position embeddings.
             Selected in the range `[0, config.max_position_embeddings - 1]`.
-
             [What are position IDs?](../glossary#position-ids)
         head_mask (`torch.FloatTensor` of shape `(num_heads,)` or `(num_layers, num_heads)`, *optional*):
             Mask to nullify selected heads of the self-attention modules. Mask values selected in `[0, 1]`:
-
             - 1 indicates the head is **not masked**,
             - 0 indicates the head is **masked**.
-
         inputs_embeds (`torch.FloatTensor` of shape `({0}, hidden_size)`, *optional*):
             Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation.
             This is useful if you want more control over how to convert *input_ids* indices into associated vectors
@@ -1208,13 +775,11 @@ CHATGLM_6B_INPUTS_DOCSTRING = r"""
 )
 class ChatGLMModel(ChatGLMPreTrainedModel):
     """
-
     The model can behave as an encoder (with only self-attention) as well
     as a decoder, in which case a layer of cross-attention is added between
     the self-attention layers, following the architecture described in [Attention is
     all you need](https://arxiv.org/abs/1706.03762) by Ashish Vaswani,
     Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz Kaiser and Illia Polosukhin.
-
     To behave as an decoder the model needs to be initialized with the
     `is_decoder` argument of the configuration set to `True`.
     To be used in a Seq2Seq model, the model needs to initialized with both `is_decoder`
@@ -1243,8 +808,6 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
         self.prefix_projection = config.prefix_projection
         self.forward_count = 0
         self.duration = 0
-        self.block_class = GLMBlockByte if config.engine_use else GLMBlock
-        self.tiny = config.tiny
 
         self.word_embeddings = init_method(
             torch.nn.Embedding,
@@ -1254,7 +817,7 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
         self.gradient_checkpointing = False
 
         def get_layer(layer_id):
-            return self.block_class(
+            return GLMBlock(
                 self.hidden_size,
                 self.num_attention_heads,
                 self.layernorm_epsilon,
@@ -1324,15 +887,14 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
             use_cache: Optional[bool] = None,
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None
+            return_dict: Optional[bool] = None,
     ) -> Union[Tuple[torch.Tensor, ...], BaseModelOutputWithPast]:
         
         torch.cuda.synchronize()
         start = time.time()
         
         self.forward_count += 1
-        if self.forward_count == 1:
-            torch.cuda.cudart().cudaProfilerStart()
+
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -1358,8 +920,7 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
 
         if inputs_embeds is None:
             inputs_embeds = self.word_embeddings(input_ids)
-        # print(inputs_embeds.shape)
-        
+
         if past_key_values is None:
             if self.pre_seq_len is not None:
                 past_key_values = self.get_prompt(batch_size=input_ids.shape[0], device=input_ids.device,
@@ -1428,7 +989,6 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
                     output_attentions
                 )
             else:
-
                 layer_ret = layer(
                     hidden_states,
                     position_ids=position_ids,
@@ -1436,8 +996,7 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
                     layer_id=torch.tensor(i),
                     layer_past=layer_past,
                     use_cache=use_cache,
-                    output_attentions=output_attentions, 
-                    forward_count=self.forward_count
+                    output_attentions=output_attentions
                 )
 
             hidden_states = layer_ret[0]
@@ -1446,7 +1005,6 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
                 presents = presents + (layer_ret[1],)
 
             if output_attentions:
-                print(output_attentions)
                 all_self_attentions = all_self_attentions + (layer_ret[2 if use_cache else 1],)
 
         # Final layer norm.
@@ -1476,7 +1034,7 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
         )
 
 
-class ChatGLMForConditionalGenerationByte(ChatGLMPreTrainedModel):
+class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
     def __init__(self, config: ChatGLMConfig, empty_init=True):
         super().__init__(config)
         if empty_init:
@@ -1484,6 +1042,9 @@ class ChatGLMForConditionalGenerationByte(ChatGLMPreTrainedModel):
         else:
             init_method = default_init
 
+        # self.hidden_size = config.hidden_size
+        # self.params_dtype = torch.half
+        # self.vocab_size = config.vocab_size
         self.max_sequence_length = config.max_sequence_length
 
         self.position_encoding_2d = config.position_encoding_2d
@@ -1641,7 +1202,7 @@ class ChatGLMForConditionalGenerationByte(ChatGLMPreTrainedModel):
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict=return_dict
+            return_dict=return_dict,
         )
 
         hidden_states = transformer_outputs[0]
@@ -1682,7 +1243,6 @@ class ChatGLMForConditionalGenerationByte(ChatGLMPreTrainedModel):
         This function is used to re-order the `past_key_values` cache if [`~PreTrainedModel.beam_search`] or
         [`~PreTrainedModel.beam_sample`] is called. This is required to match `past_key_values` with the correct
         beam_idx at every generation step.
-
         Output shares the same memory storage as `past`.
         """
         return tuple(
@@ -1732,9 +1292,6 @@ class ChatGLMForConditionalGenerationByte(ChatGLMPreTrainedModel):
         response = tokenizer.decode(outputs)
         response = self.process_response(response)
         history = history + [(query, response)]
-        torch.cuda.cudart().cudaProfilerStop()
-        print("end to end: %.4f ms" % (self.transformer.duration))
-        print("--------------------------------")
         return response, history
 
     @torch.no_grad()
@@ -1881,5 +1438,3 @@ class ChatGLMForConditionalGenerationByte(ChatGLMPreTrainedModel):
 
         self.transformer = quantize(self.transformer, bits, empty_init=empty_init, **kwargs)
         return self
-
-

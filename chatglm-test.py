@@ -1,5 +1,6 @@
 from transformers import AutoTokenizer, AutoModel
-from model.modeling_chatglm import ChatGLMForConditionalGeneration
+from model.modeling_chatglm import ChatGLMForConditionalGenerationByte
+from model.baseline_chatglm import ChatGLMForConditionalGeneration
 from model.configuration_chatglm import ChatGLMConfig
 import argparse
 import yaml
@@ -23,14 +24,18 @@ def load_parameter(model_name: str, seq_len: int):
         model_type="chatglm",
         torch_dtype="float16",
         # switch on the accelerating engine
-        engine_use=args.engine_use,
-        tiny=tiny_bool
+        # engine_use=args.engine_use,
+        # tiny=tiny_bool
     )
 
     # model = model.cpu()
-    new_model = ChatGLMForConditionalGeneration(configuration)
-    #print(new_model.transformer.layers[1].mlp.dense_4h_to_h.bias)
-        #print(model.transformer.layers[0].mlp.dense_4h_to_h.bias)
+    if args.engine_use:
+        configuration.engine_use = args.engine_use
+        configuration.tiny = tiny_bool
+        new_model = ChatGLMForConditionalGenerationByte(configuration)
+    else:
+        new_model = ChatGLMForConditionalGeneration(configuration)
+    
     new_model.transformer.word_embeddings.weight = model.transformer.word_embeddings.weight
     new_model.lm_head.weight = model.lm_head.weight
     for i in range(configuration.num_layers):
@@ -47,7 +52,7 @@ def load_parameter(model_name: str, seq_len: int):
         new_model.transformer.layers[i].mlp.dense_4h_to_h.weight = model.transformer.layers[i].mlp.dense_4h_to_h.weight
         new_model.transformer.layers[i].mlp.dense_4h_to_h.bias = model.transformer.layers[i].mlp.dense_4h_to_h.bias
         # load parameters into byte transformer backend
-        if tiny_bool:
+        if tiny_bool and args.engine_use:
             new_model.transformer.layers[i].attention_query_key_value_weight = model.transformer.layers[i].attention.query_key_value.weight.transpose(0, 1).contiguous()
             new_model.transformer.layers[i].attention_dense_weight = model.transformer.layers[i].attention.dense.weight.transpose(0, 1).contiguous()
             new_model.transformer.layers[i].dense_h_to_4h_weight = model.transformer.layers[i].mlp.dense_h_to_4h.weight.transpose(0, 1).contiguous()
