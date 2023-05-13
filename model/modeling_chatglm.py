@@ -15,6 +15,7 @@ from torch import nn
 from torch.nn import CrossEntropyLoss, LayerNorm
 from torch.nn.utils import skip_init
 from typing import Optional, Tuple, Union, List, Callable, Dict, Any
+from ByteGLM.lib import gelu_cuda, embedding_cuda
 
 from transformers.utils import (
     add_code_sample_docstrings,
@@ -51,6 +52,7 @@ CHATGLM_6B_PRETRAINED_MODEL_ARCHIVE_LIST = [
     # See all ChatGLM-6B models at https://huggingface.co/models?filter=chatglm
 ]
 
+torch.random.manual_seed(999)
 
 class InvalidScoreLogitsProcessor(LogitsProcessor):
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
@@ -447,45 +449,105 @@ class SelfAttention(torch.nn.Module):
 
         seq_len = hidden_states.size(0)
         hidden_size = hidden_states.size(2)
-        
+    
+        # torch.cuda.synchronize()
+        # l1_st = time.time()
         # [seq_len, batch, 3 * hidden_size]
         mixed_raw_layer = self.query_key_value(hidden_states)
+        # torch.cuda.synchronize()
+        # l1_ed = time.time()
+        # print("l1: %.4f ms" % ((l1_ed-l1_st)*1000))
 
+        # torch.cuda.synchronize()
+        # l2_st = time.time()
         # [seq_len, batch, 3 * hidden_size] --> [seq_len, batch, num_attention_heads, 3 * hidden_size_per_attention_head]
         new_tensor_shape = mixed_raw_layer.size()[:-1] + (
             self.num_attention_heads_per_partition,
             3 * self.hidden_size_per_attention_head,
         )
         mixed_raw_layer = mixed_raw_layer.view(*new_tensor_shape)
+        # torch.cuda.synchronize()
+        # l2_ed = time.time()
+        # print("l2: %.4f ms" % ((l2_ed-l2_st)*1000))
 
+        # torch.cuda.synchronize()
+        # l3_st = time.time()
         # [seq_len, batch, num_attention_heads, hidden_size_per_attention_head]
-        (query_layer, key_layer, value_layer) = self.split_tensor_along_last_dim(mixed_raw_layer, 3)
+        (query_layer, key_layer, value_layer) = self.split_tensor_along_last_dim(mixed_raw_layer, 3) 
+        # torch.cuda.synchronize()
+        # l3_ed = time.time()
+        # print("l3: %.4f ms" % ((l3_ed-l3_st)*1000))
 
         # to_print = key_layer
 
+        # torch.cuda.synchronize()
+        # l4_st = time.time()
         if self.position_encoding_2d:
             # print("Rotary embedding is done !")
+            # torch.cuda.synchronize()
+            # l1_st = time.time()
             q1, q2 = query_layer.chunk(2, dim=(query_layer.ndim - 1))
             k1, k2 = key_layer.chunk(2, dim=(key_layer.ndim - 1))
+            q1 = q1.contiguous()
+            q2 = q2.contiguous()
+            k1 = k1.contiguous()
+            k2 = k2.contiguous()
+            # torch.cuda.synchronize()
+            # l1_ed = time.time()
+            # print("l1: %.4f ms" % ((l1_ed-l1_st)*1000))
+
+            # torch.cuda.synchronize()
+            # l2_st = time.time()
             cos, sin = self.rotary_emb(q1, seq_len=position_ids.max() + 1)
+            # torch.cuda.synchronize()
+            # l2_ed = time.time()
+            # print("l2: %.4f ms" % ((l2_ed-l2_st)*1000))
             # if layer_id == 0 and layer_past is None:
             #     print(cos.shape)
             #     print(cos)
+            # torch.cuda.synchronize()
+            # l3_st = time.time()
             position_ids, block_position_ids = position_ids[:, 0, :].transpose(0, 1).contiguous(), \
                 position_ids[:, 1, :].transpose(0, 1).contiguous()
+            # torch.cuda.synchronize()
+            # l3_ed = time.time()
+            # print("l3: %.4f ms" % ((l3_ed-l3_st)*1000))
             # if layer_id == 0 and layer_past is None:
             #     print(position_ids)
             #     print(block_position_ids)
-            q1, k1 = apply_rotary_pos_emb_index(q1, k1, cos, sin, position_ids)
-            q2, k2 = apply_rotary_pos_emb_index(q2, k2, cos, sin, block_position_ids)
+            # torch.cuda.synchronize()
+            # l4_st = time.time()
+            # print(q1.shape)
+            # print(k1.shape)
+            # print(cos.shape)
+            # print(sin.shape)
+            # print(position_ids.shape)
+            embedding_cuda(q1, k1, cos, sin, position_ids.int())
+            embedding_cuda(q2, k2, cos, sin, block_position_ids.int())
+            # q1, k1 = apply_rotary_pos_emb_index(q1, k1, cos, sin, position_ids)
+            # q2, k2 = apply_rotary_pos_emb_index(q2, k2, cos, sin, block_position_ids)
+            # torch.cuda.synchronize()
+            # l4_ed = time.time()
+            # print("l4: %.4f ms" % ((l4_ed-l4_st)*1000))
+
+            # torch.cuda.synchronize()
+            # l5_st = time.time()
             query_layer = torch.concat([q1, q2], dim=(q1.ndim - 1))
             key_layer = torch.concat([k1, k2], dim=(k1.ndim - 1))
+            # torch.cuda.synchronize()
+            # l5_ed = time.time()
+            # print("l5: %.4f ms" % ((l5_ed-l5_st)*1000))
         else:
             position_ids = position_ids.transpose(0, 1)
             cos, sin = self.rotary_emb(value_layer, seq_len=position_ids.max() + 1)
             # [seq_len, batch, num_attention_heads, hidden_size_per_attention_head]
             query_layer, key_layer = apply_rotary_pos_emb_index(query_layer, key_layer, cos, sin, position_ids)
+        # torch.cuda.synchronize()
+        # l4_ed = time.time()
+        # print("l4: %.4f ms" % ((l4_ed-l4_st)*1000))
 
+        # torch.cuda.synchronize()
+        # l5_st = time.time()
         # [seq_len, batch, hidden_size]
         context_layer, present, attention_probs = attention_fn(
             self=self,
@@ -498,6 +560,9 @@ class SelfAttention(torch.nn.Module):
             layer_past=layer_past,
             use_cache=use_cache
         )
+        # torch.cuda.synchronize()
+        # l5_ed = time.time()
+        # print("l5: %.4f ms" % ((l5_ed-l5_st)*1000))
 
         # if layer_id == 0 and layer_past is None:
         #         print(query_layer.shape)
@@ -591,7 +656,8 @@ class GLU(torch.nn.Module):
         # [seq_len, batch, inner_hidden_size]
         intermediate_parallel = self.dense_h_to_4h(hidden_states)
 
-        intermediate_parallel = self.activation_func(intermediate_parallel)
+        # intermediate_parallel = self.activation_func(intermediate_parallel)
+        gelu_cuda(intermediate_parallel)
 
         output = self.dense_4h_to_h(intermediate_parallel)
 
@@ -808,10 +874,6 @@ class GLMBlockByte(torch.nn.Module):
         self.dense_h_to_4h_weight = torch.empty((1), dtype=torch.half)
         self.dense_4h_to_h_weight = torch.empty((1), dtype=torch.half)
 
-
-        torch.ops.load_library('./lib/libths_bytetransformer.so')
-
-
     def forward(
             self,
             hidden_states: torch.Tensor,
@@ -858,6 +920,8 @@ class GLMBlockByte(torch.nn.Module):
                 attention_dense_weight = self.attention.dense.weight.transpose(0, 1).contiguous()
                 dense_h_to_4h_weight = self.mlp.dense_h_to_4h.weight.transpose(0, 1).contiguous()
                 dense_4h_to_h_weight = self.mlp.dense_4h_to_h.weight.transpose(0, 1).contiguous()
+                # print(dense_4h_to_h_weight.shape)
+                # print(self.mlp.dense_4h_to_h.weight.shape)
 
             # out1 = F.layer_norm(hidden_states, (hidden_size, ),
             #                              weight=self.input_layernorm.weight, bias=self.input_layernorm.bias,
@@ -924,7 +988,7 @@ class GLMBlockByte(torch.nn.Module):
 
             # TODO: permutation for output and qkv
             # "contiguous" check can be removed.
-            output = output.permute(1, 0, 2).contiguous()
+            output = output.permute(1, 0, 2)
             # query_layer = query_layer.permute(1, 0, 2, 3).contiguous()
             key_layer = key_layer.permute(1, 0, 2, 3).contiguous()
             value_layer = value_layer.permute(1, 0, 2, 3).contiguous()
@@ -961,6 +1025,7 @@ class GLMBlockByte(torch.nn.Module):
 
             # Layer norm at the begining of the transformer layer.
             # [seq_len, batch, hidden_size]
+
             attention_input = self.input_layernorm(hidden_states)
 
             # [hk:] layernorm checked.
@@ -1264,10 +1329,10 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
         
         torch.cuda.synchronize()
         start = time.time()
-
+        
         self.forward_count += 1
-        # if self.forward_count == 2:
-        #     torch.cuda.cudart().cudaProfilerStart()
+        if self.forward_count == 1:
+            torch.cuda.cudart().cudaProfilerStart()
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -1294,6 +1359,7 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.word_embeddings(input_ids)
         # print(inputs_embeds.shape)
+        
         if past_key_values is None:
             if self.pre_seq_len is not None:
                 past_key_values = self.get_prompt(batch_size=input_ids.shape[0], device=input_ids.device,
@@ -1380,6 +1446,7 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
                 presents = presents + (layer_ret[1],)
 
             if output_attentions:
+                print(output_attentions)
                 all_self_attentions = all_self_attentions + (layer_ret[2 if use_cache else 1],)
 
         # Final layer norm.
@@ -1399,7 +1466,7 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
             print("--------------------------------")
             print("prefill stage: %.4f ms" % (dur))
             print("--------------------------------")
-        # print("forward count: %d [whole dur: %.4f ms]" % (self.forward_count, self.duration))
+        print("forward count: %d [whole dur: %.4f ms]" % (self.forward_count, self.duration))
 
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
@@ -1666,6 +1733,8 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
         response = self.process_response(response)
         history = history + [(query, response)]
         torch.cuda.cudart().cudaProfilerStop()
+        print("end to end: %.4f ms" % (self.transformer.duration))
+        print("--------------------------------")
         return response, history
 
     @torch.no_grad()

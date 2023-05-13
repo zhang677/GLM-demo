@@ -1,0 +1,4 @@
+# ninja log v5
+0	25183	1683987472124885887	/home/nfs_data/hongke21/Byte-GLM/lib/build/temp.linux-x86_64-cpython-38/pybind_cuda.o	c547a8535822595d
+52	49792	1683987657672242757	/home/nfs_data/hongke21/Byte-GLM/lib/build/temp.linux-x86_64-cpython-38/gelu.o	d59aaa9d3d199bdd
+51	49831	1683987657692242688	/home/nfs_data/hongke21/Byte-GLM/lib/build/temp.linux-x86_64-cpython-38/embedding.o	a298bde65d612f66
