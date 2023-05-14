@@ -51,6 +51,7 @@ CHATGLM_6B_PRETRAINED_MODEL_ARCHIVE_LIST = [
     # See all ChatGLM-6B models at https://huggingface.co/models?filter=chatglm
 ]
 
+torch.random.manual_seed(999)
 
 class InvalidScoreLogitsProcessor(LogitsProcessor):
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
@@ -971,6 +972,9 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
         else:
             attention_mask = attention_mask.to(hidden_states.device)
 
+        if self.forward_count == 1:
+            print("seq len: ", hidden_states.size(0))
+
         for i, layer in enumerate(self.layers):
 
             if output_hidden_states:
@@ -1292,6 +1296,8 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
         response = tokenizer.decode(outputs)
         response = self.process_response(response)
         history = history + [(query, response)]
+        print("end to end: %.4f ms" % (self.transformer.duration))
+        print("--------------------------------")
         return response, history
 
     @torch.no_grad()

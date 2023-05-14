@@ -66,12 +66,15 @@ def load_parameter(model_name: str, seq_len: int):
 
 if __name__ == '__main__': 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--seq-len', type=int, default=512)
-    parser.add_argument('--test-case', type=int, default=0)
+    parser.add_argument('--seq-len', type=int, default=-1)
+    parser.add_argument('--test-case', type=int, default=-1)
     parser.add_argument('--engine-use', default=False, action='store_true')
     args = parser.parse_args()
 
     torch.ops.load_library('./lib/libths_bytetransformer.so')
+
+    assert args.seq_len > -1 or args.test_case > -1, \
+        "either seq len or test case should be assigned !"
 
     string = " "
     if args.seq_len == 8:
@@ -87,7 +90,10 @@ if __name__ == '__main__':
     elif args.seq_len == 1024:
         file_name = os.path.join('./case', '1024.yaml')
     else:
-        raise NotImplementedError
+        dir = './case'
+        file_list = os.listdir(dir)
+        print(file_list)
+        file_name = os.path.join('./case', file_list[args.test_case])
     f = open(file_name, 'r')
     file = yaml.load(f, Loader=yaml.FullLoader)
     string = file[0]
