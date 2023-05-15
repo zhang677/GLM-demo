@@ -79,24 +79,31 @@ if __name__ == '__main__':
     string = " "
     if args.seq_len == 8:
         file_name = os.path.join('./case', '8.yaml')
+        case_id = 0
     elif args.seq_len == 16:
         file_name = os.path.join('./case', '16.yaml')
+        case_id = 0
     elif args.seq_len == 128:
         file_name = os.path.join('./case', '128.yaml')
+        case_id = 0
     elif args.seq_len == 256:
         file_name = os.path.join('./case', '256.yaml')
+        case_id = 0
     elif args.seq_len == 512:
         file_name = os.path.join('./case', '512.yaml')
+        case_id = args.test_case
     elif args.seq_len == 1024:
         file_name = os.path.join('./case', '1024.yaml')
+        case_id = args.test_case
     else:
         dir = './case'
         file_list = os.listdir(dir)
         print(file_list)
         file_name = os.path.join('./case', file_list[args.test_case])
+        case_id = 0
     f = open(file_name, 'r')
     file = yaml.load(f, Loader=yaml.FullLoader)
-    string = file[0]
+    string = file[case_id]
 
     model_name = "THUDM/chatglm-6b"
 
