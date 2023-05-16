@@ -904,19 +904,9 @@ class GLMBlockByte(torch.nn.Module):
             if layer_id == 0 and forward_count == 1:
                 print("seq len: ", seq_len)
 
-            if seq_len <= 256:
-                hidden_states, qkv_cache = torch.ops.ByteTransformer.BertTransformer(
-                    self.num_attention_heads, self.hidden_size_per_attention_head, self.num_layers, 
-                    self.attention_query_key_value_weight, self.attention.query_key_value.bias, 
-                    self.attention_dense_weight, self.attention.dense.bias,
-                    self.input_layernorm.weight, self.input_layernorm.bias,
-                    self.dense_h_to_4h_weight, self.mlp.dense_h_to_4h.bias, 
-                    self.dense_4h_to_h_weight, self.mlp.dense_4h_to_h.bias,
-                    self.post_attention_layernorm.weight, self.post_attention_layernorm.bias,
-                    hidden_states, attention_mask,
-                    False, False)
-            elif seq_len <= 1024:
-                query_key_value_weight = self.attention.query_key_value.weight.transpose(0, 1).contiguous()
+            if self.attention_query_key_value_weight.size(0) == 1:
+                # print("transpose for weight starts ...")
+                attention_query_key_value_weight = self.attention.query_key_value.weight.transpose(0, 1).contiguous()
                 attention_dense_weight = self.attention.dense.weight.transpose(0, 1).contiguous()
                 dense_h_to_4h_weight = self.mlp.dense_h_to_4h.weight.transpose(0, 1).contiguous()
                 dense_4h_to_h_weight = self.mlp.dense_4h_to_h.weight.transpose(0, 1).contiguous()
@@ -943,7 +933,7 @@ class GLMBlockByte(torch.nn.Module):
 
                 hidden_states, qkv_cache = torch.ops.ByteTransformer.BertTransformer(
                     self.num_attention_heads, self.hidden_size_per_attention_head, self.num_layers, 
-                    query_key_value_weight, self.attention.query_key_value.bias, 
+                    attention_query_key_value_weight, self.attention.query_key_value.bias, 
                     attention_dense_weight, self.attention.dense.bias,
                     self.input_layernorm.weight, self.input_layernorm.bias,
                     dense_h_to_4h_weight, self.mlp.dense_h_to_4h.bias, 
@@ -951,8 +941,18 @@ class GLMBlockByte(torch.nn.Module):
                     self.post_attention_layernorm.weight, self.post_attention_layernorm.bias,
                     hidden_states, attention_mask,
                     False, False)
+            
             else:
-                raise NotImplementedError
+                hidden_states, qkv_cache = torch.ops.ByteTransformer.BertTransformer(
+                    self.num_attention_heads, self.hidden_size_per_attention_head, self.num_layers, 
+                    self.attention_query_key_value_weight, self.attention.query_key_value.bias, 
+                    self.attention_dense_weight, self.attention.dense.bias,
+                    self.input_layernorm.weight, self.input_layernorm.bias,
+                    self.dense_h_to_4h_weight, self.mlp.dense_h_to_4h.bias, 
+                    self.dense_4h_to_h_weight, self.mlp.dense_4h_to_h.bias,
+                    self.post_attention_layernorm.weight, self.post_attention_layernorm.bias,
+                    hidden_states, attention_mask,
+                    False, False)
         
             output = hidden_states.reshape((batch_size, seq_len, -1))
 
@@ -1244,7 +1244,6 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
         self.forward_count = 0
         self.duration = 0
         self.block_class = GLMBlockByte if config.engine_use else GLMBlock
-        self.tiny = config.tiny
 
         self.word_embeddings = init_method(
             torch.nn.Embedding,
