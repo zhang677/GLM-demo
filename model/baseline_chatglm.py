@@ -809,6 +809,7 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
         self.prefix_projection = config.prefix_projection
         self.forward_count = 0
         self.duration = 0
+        self.first_token_latency = 0
 
         self.word_embeddings = init_method(
             torch.nn.Embedding,
@@ -1023,7 +1024,10 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
         torch.cuda.synchronize()
         end = time.time()
         dur = (end - start) * 1000
-        self.duration += dur
+        if self.forward_count <= 3:
+            self.duration += dur
+        if self.forward_count <= 2:
+            self.first_token_latency += dur
         if self.forward_count == 1:
             print("--------------------------------")
             print("prefill stage: %.4f ms" % (dur))
@@ -1325,6 +1329,8 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
             response = self.process_response(response)
             new_history = history + [(query, response)]
             yield response, new_history
+        print("end to end: %.4f ms" % (self.transformer.duration))
+        print("--------------------------------")
 
     @torch.no_grad()
     def stream_generate(

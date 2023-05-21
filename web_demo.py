@@ -2,6 +2,9 @@ from transformers import AutoModel, AutoTokenizer
 import gradio as gr
 import mdtex2html
 import torch
+import os
+import yaml
+import time
 # from threading import Thread
 from model.modeling_chatglm import ChatGLMForConditionalGenerationByte
 from model.baseline_chatglm import ChatGLMForConditionalGeneration
@@ -11,8 +14,11 @@ model_name = "THUDM/chatglm-6b"
 torch.ops.load_library('./lib/libths_bytetransformer.so')
 torch.random.manual_seed(999)
 
-model_0 = AutoModel.from_pretrained(model_name, trust_remote_code=True).half()
-configuration = ChatGLMConfig(
+def load_parameter(model_name: str, engine_use: bool):
+    model = AutoModel.from_pretrained(model_name, trust_remote_code=True).half()
+    model = model.eval()
+
+    configuration = ChatGLMConfig(
         bos_token_id=130004, 
         eos_token_id=130005, 
         mask_token_id=130000, 
@@ -23,22 +29,38 @@ configuration = ChatGLMConfig(
         model_type="chatglm",
         torch_dtype="float16",
         # switch on the accelerating engine
-        # engine_use=True
+        # engine_use=args.engine_use,
+        # tiny=tiny_bool
     )
 
+    if engine_use:
+        configuration.engine_use = True
+        new_model = ChatGLMForConditionalGenerationByte(configuration)
+    else:
+        new_model = ChatGLMForConditionalGeneration(configuration)
+    
+    new_model.load_state_dict(model.state_dict(), strict=True)
+
+    return new_model
+
+# print(model_2.transformer.layers[0].attention_query_key_value_weight.shape)
+# print(model_2.transformer.layers[0].attention.query_key_value.weight.shape)
+# for i in range(configuration.num_layers):
+#     model_2.transformer.layers[i].attention_query_key_value_weight = model_2.transformer.layers[i].attention.query_key_value.weight.transpose(0, 1).contiguous()
+#     model_2.transformer.layers[i].attention_dense_weight = model_2.transformer.layers[i].attention.dense.weight.transpose(0, 1).contiguous()
+#     model_2.transformer.layers[i].dense_h_to_4h_weight = model_2.transformer.layers[i].mlp.dense_h_to_4h.weight.transpose(0, 1).contiguous()
+#     model_2.transformer.layers[i].dense_4h_to_h_weight = model_2.transformer.layers[i].mlp.dense_4h_to_h.weight.transpose(0, 1).contiguous()
+
 tokenizer_1 = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-model_1 = ChatGLMForConditionalGeneration(configuration)
-model_1.load_state_dict(model_0.state_dict(), strict=False)
+model_1 = load_parameter(model_name, False)
 model_1 = model_1.eval()
 model_1.half().to("cuda:1")
 
 tokenizer_2 = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-configuration.engine_use = True
-model_2 = ChatGLMForConditionalGenerationByte(configuration)
-model_2.load_state_dict(model_0.state_dict(), strict=False)
+model_2 = load_parameter(model_name, True)
 model_2 = model_2.eval()
 model_2.half().to("cuda:0")
-print(model_0.device)
+
 print(model_1.device)
 print(model_2.device)
 # model_2.cuda(1)
@@ -90,30 +112,112 @@ def parse_text(text):
     text = "".join(lines)
     return text
 
-def predict_1(input, chatbot, max_length, top_p, temperature, history):
+def predict_1(input, chatbot, history):
     chatbot.append((parse_text(input), ""))
     # for response, history in model_1.stream_chat(tokenizer_1, input, history, max_length=max_length, top_p=top_p,
     #                                            temperature=temperature):
     #     chatbot[-1] = (parse_text(input), parse_text(response))       
 
     #     yield chatbot, history
-    response, history = model_1.chat(tokenizer_1, input, history=[])
-    chatbot[-1] = (parse_text(input), parse_text(response))   
+    model_1.transformer.duration = 0
+    model_1.transformer.first_token_latency = 0
+    model_1.transformer.forward_count = 0
+    model_1.past_key_values = None
+    for response, history in model_1.stream_chat(tokenizer_1, input, history=[]):
+        chatbot[-1] = (parse_text(input), parse_text(response))   
+        yield chatbot, history, "……", "……"
+    end_to_end = model_1.transformer.duration
+    first_token = model_1.transformer.first_token_latency
+    yield chatbot, history, end_to_end, first_token
+    return
 
-    return chatbot, history
 
-
-def predict_2(input, chatbot, max_length, top_p, temperature, history):
+def predict_2(input, chatbot, history):
     chatbot.append((parse_text(input), ""))
     # for response, history in model_2.stream_chat(tokenizer_2, input, history, max_length=max_length, top_p=top_p,
     #                                            temperature=temperature):
     #     chatbot[-1] = (parse_text(input), parse_text(response))       
 
     #     yield chatbot, history
-    response, history = model_2.chat(tokenizer_2, input, history=[])
-    chatbot[-1] = (parse_text(input), parse_text(response))   
+    model_2.transformer.duration = 0
+    model_2.transformer.first_token_latency = 0
+    model_2.transformer.forward_count = 0
+    model_2.past_key_values = None
+    for response, history in model_2.stream_chat(tokenizer_2, input, history=[]):
+        chatbot[-1] = (parse_text(input), parse_text(response))   
+        yield chatbot, history, "……", "……"
+    end_to_end = model_2.transformer.duration
+    first_token = model_2.transformer.first_token_latency
+    yield chatbot, history, end_to_end, first_token
+    return 
 
-    return chatbot, history
+
+def autotest_1(chatbot, history):
+    chatbot = []
+    history = []
+    yield chatbot, history, "……", "……"
+    e_list = []
+    f_list = []
+    dir = './test_case'
+    file_list = os.listdir(dir)
+    for test_i in range(7):
+        time.sleep(2.0)
+        file_name = os.path.join(dir, file_list[test_i])
+        f = open(file_name, 'r')
+        file = yaml.load(f, Loader=yaml.FullLoader)
+        input = file[0]
+        chatbot.append((parse_text(input), ""))
+        model_1.transformer.duration = 0
+        model_1.transformer.first_token_latency = 0
+        model_1.transformer.forward_count = 0
+        model_1.past_key_values = None
+        for response, history in model_1.stream_chat(tokenizer_1, input, history=[]):
+            chatbot[-1] = (parse_text(input), parse_text(response))  
+            yield chatbot, history, "……", "……" 
+        history = []
+        end_to_end = model_1.transformer.duration
+        first_token = model_1.transformer.first_token_latency
+        e_list.append(end_to_end)
+        f_list.append(first_token)
+        yield chatbot, history, end_to_end, first_token
+    e_mean = sum(e_list) / len(e_list)
+    f_mean = sum(f_list) / len(f_list)
+    yield chatbot, history, e_mean, f_mean
+    return 
+
+
+def autotest_2(chatbot, history):
+    chatbot = []
+    history = []
+    yield chatbot, history, "……", "……"
+    e_list = []
+    f_list = []
+    dir = './test_case'
+    file_list = os.listdir(dir)
+    for test_i in range(7):
+        time.sleep(2.0)
+        file_name = os.path.join(dir, file_list[test_i])
+        f = open(file_name, 'r')
+        file = yaml.load(f, Loader=yaml.FullLoader)
+        input = file[0]
+        chatbot.append((parse_text(input), ""))
+        model_2.transformer.duration = 0
+        model_2.transformer.first_token_latency = 0
+        model_2.transformer.forward_count = 0
+        model_2.past_key_values = None
+        for response, history in model_2.stream_chat(tokenizer_2, input, history=[]):
+            chatbot[-1] = (parse_text(input), parse_text(response))   
+            yield chatbot, history, "……", "……"
+        history = []
+        end_to_end = model_2.transformer.duration
+        first_token = model_2.transformer.first_token_latency
+        e_list.append(end_to_end)
+        f_list.append(first_token)
+        yield chatbot, history, end_to_end, first_token
+    e_mean = sum(e_list) / len(e_list)
+    f_mean = sum(f_list) / len(f_list)
+    yield chatbot, history, e_mean, f_mean
+    return 
 
 
 def reset_user_input():
@@ -132,17 +236,21 @@ with gr.Blocks() as demo:
             with gr.Column(scale=1): 
                 with gr.Column(scale=3):
                     chatbot_1 = gr.Chatbot()
-                with gr.Column(scale=1):
-                    max_length_1 = gr.Slider(0, 4096, value=2048, step=1.0, label="Maximum length", interactive=True)
-                    top_p_1 = gr.Slider(0, 1, value=0.7, step=0.01, label="Top P", interactive=True)
-                    temperature_1 = gr.Slider(0, 1, value=0.95, step=0.01, label="Temperature", interactive=True)
+                    time_1 = gr.Textbox(label="End-to-End Latency [ms]")
+                    time_1f = gr.Textbox(label="First-Token Latency [ms]")
+                # with gr.Column(scale=1):
+                #     max_length_1 = gr.Slider(0, 4096, value=2048, step=1.0, label="Maximum length", interactive=True)
+                #     top_p_1 = gr.Slider(0, 1, value=0.7, step=0.01, label="Top P", interactive=True)
+                #     temperature_1 = gr.Slider(0, 1, value=0.95, step=0.01, label="Temperature", interactive=True)
             with gr.Column(scale=1): 
                 with gr.Column(scale=3):   
                     chatbot_2 = gr.Chatbot()
-                with gr.Column(scale=1):
-                    max_length_2 = gr.Slider(0, 4096, value=2048, step=1.0, label="Maximum length", interactive=True)
-                    top_p_2 = gr.Slider(0, 1, value=0.7, step=0.01, label="Top P", interactive=True)
-                    temperature_2 = gr.Slider(0, 1, value=0.95, step=0.01, label="Temperature", interactive=True)
+                    time_2 = gr.Textbox(label="End-to-End Latency [ms]")
+                    time_2f = gr.Textbox(label="First-Token Latency [ms]")
+                # with gr.Column(scale=1):
+                #     max_length_2 = gr.Slider(0, 4096, value=2048, step=1.0, label="Maximum length", interactive=True)
+                #     top_p_2 = gr.Slider(0, 1, value=0.7, step=0.01, label="Top P", interactive=True)
+                #     temperature_2 = gr.Slider(0, 1, value=0.95, step=0.01, label="Temperature", interactive=True)
         with gr.Row(scale=2):
             with gr.Column():
                 with gr.Column(scale=12):
@@ -151,18 +259,25 @@ with gr.Blocks() as demo:
                 with gr.Column(min_width=32, scale=1):
                     submitBtn = gr.Button("Submit", variant="primary")
                     emptyBtn = gr.Button("Clear History")
+                    testBtn = gr.Button("AutoTest")
 
     history_1 = gr.State([])
     history_2 = gr.State([])
 
-    submitBtn.click(predict_1, [user_input, chatbot_1, max_length_1, top_p_1, temperature_1, history_1], \
-                            [chatbot_1, history_1],
+    submitBtn.click(predict_2, [user_input, chatbot_2, history_2], \
+                            [chatbot_2, history_2, time_2, time_2f],
                             show_progress=True)
-    submitBtn.click(predict_2, [user_input, chatbot_2, max_length_2, top_p_2, temperature_2, history_2], \
-                            [chatbot_2, history_2,],
+    
+    submitBtn.click(predict_1, [user_input, chatbot_1, history_1], \
+                            [chatbot_1, history_1, time_1, time_1f],
                             show_progress=True)
     
     submitBtn.click(reset_user_input, [], [user_input])
+
+    testBtn.click(autotest_1, [chatbot_1, history_1], \
+                            [chatbot_1, history_1, time_1, time_1f],)
+    testBtn.click(autotest_2, [chatbot_2, history_2], \
+                            [chatbot_2, history_2, time_2, time_2f],)
 
     emptyBtn.click(reset_state, outputs=[chatbot_1, history_1, chatbot_2, history_2], show_progress=True)
 

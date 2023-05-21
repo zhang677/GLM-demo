@@ -7,11 +7,45 @@ import yaml
 import os
 import torch
 
+
+def parse_text(text):
+    """copy from https://github.com/GaiZhenbiao/ChuanhuChatGPT/"""
+    lines = text.split("\n")
+    lines = [line for line in lines if line != ""]
+    count = 0
+    for i, line in enumerate(lines):
+        if "```" in line:
+            count += 1
+            items = line.split('`')
+            if count % 2 == 1:
+                lines[i] = f'<pre><code class="language-{items[-1]}">'
+            else:
+                lines[i] = f'<br></code></pre>'
+        else:
+            if i > 0:
+                if count % 2 == 1:
+                    line = line.replace("`", "\`")
+                    line = line.replace("<", "&lt;")
+                    line = line.replace(">", "&gt;")
+                    line = line.replace(" ", "&nbsp;")
+                    line = line.replace("*", "&ast;")
+                    line = line.replace("_", "&lowbar;")
+                    line = line.replace("-", "&#45;")
+                    line = line.replace(".", "&#46;")
+                    line = line.replace("!", "&#33;")
+                    line = line.replace("(", "&#40;")
+                    line = line.replace(")", "&#41;")
+                    line = line.replace("$", "&#36;")
+                lines[i] = "<br>"+line
+    text = "".join(lines)
+    return text
+
 def load_parameter(model_name: str, seq_len: int):
     model = AutoModel.from_pretrained(model_name, trust_remote_code=True).half().cuda()
     model = model.eval()
 
     tiny_bool = (seq_len <= 256)
+    # tiny_bool = False
 
     configuration = ChatGLMConfig(
         bos_token_id=130004, 
@@ -104,10 +138,9 @@ if __name__ == '__main__':
     f = open(file_name, 'r')
     file = yaml.load(f, Loader=yaml.FullLoader)
     string = file[case_id]
-
     model_name = "THUDM/chatglm-6b"
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     model = load_parameter(model_name, args.seq_len)
-    response, history = model.chat(tokenizer, string, history=[])
+    response, history = model.chat(tokenizer, parse_text(string), history=[])
     print(response)
