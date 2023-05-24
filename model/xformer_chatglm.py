@@ -435,13 +435,11 @@ def xformer_efficient_attention_fn(
         # Find the minimal multiple of 8 that is larger than the sequence length
         mask_shape = (attention_mask.shape[0], 1, 8 * math.ceil(q_seq_len / 8), 8 * math.ceil(q_seq_len / 8))
         xformer_attention_mask = torch.zeros(mask_shape, dtype=key_layer.dtype, device=key_layer.device)
-        # xformer_attention_mask equals to float('-inf') if the attention mask is True
-        xformer_attention_mask = xformer_attention_mask.masked_fill_(attention_mask.unsqueeze(1).unsqueeze(2), float('-inf'))
-
-        #.masked_fill_(attention_mask, float('-inf'))
+        mask_ids = torch.nonzero(attention_mask)
+        xformer_attention_mask[mask_ids[:,0], :, mask_ids[:,2], mask_ids[:,3]] = float('-inf')
         del attention_mask
         torch.cuda.empty_cache()
-        xformer_attention_mask = xformer_attention_mask.repeat(1, num_attention_heads, 1, 1)[:,:,:q_seq_len,:q_seq_len]
+        xformer_attention_mask = xformer_attention_mask.expand(b, num_attention_heads, mask_shape[2], mask_shape[3])[:,:,:q_seq_len,:q_seq_len]
         context_layer = xops.memory_efficient_attention(query_layer, key_layer, value_layer, attn_bias=xformer_attention_mask, op = (xops.fmha.cutlass.FwOp, None)).transpose(0, 1).view(q_seq_len, b, hidden_size_per_partition)
         # context_layer = xops.memory_efficient_attention(query_layer, key_layer, value_layer, attn_bias=xops.LowerTriangularMask()).view(q_seq_len, b, hidden_size_per_partition)
     else:
@@ -819,6 +817,18 @@ class ChatGLMPreTrainedModel(PreTrainedModel):
         for i, context_length in enumerate(context_lengths):
             attention_mask[i, :, :context_length] = 1
         attention_mask.unsqueeze_(1)
+        attention_mask = (attention_mask < 0.5).bool()
+
+        return attention_mask
+    
+    def get_xformer_masks(self, input_ids, device):
+        batch_size, seq_length = input_ids.shape
+        context_lengths = [seq.tolist().index(self.config.bos_token_id) for seq in input_ids]
+        mask_length = 8 * math.ceil(seq_length / 8)
+        attention_mask = torch.ones((batch_size, mask_length, mask_length), device=device)
+        attention_mask.tril_()
+        for i, context_length in enumerate(context_lengths):
+            attention_mask[i, :, :context_length] = 1
         attention_mask = (attention_mask < 0.5).bool()
 
         return attention_mask

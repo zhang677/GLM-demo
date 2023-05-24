@@ -46,10 +46,16 @@ model_1 = load_parameter(model_name, False)
 model_1 = model_1.eval()
 model_1.half().to("cuda:1")
 
+
 tokenizer_2 = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 model_2 = load_parameter(model_name, True)
 model_2 = model_2.eval()
 model_2.half().to("cuda:0")
+"""
+# Such warm up is invalid
+_, _ = model_1.chat(tokenizer_1, "北京是一个怎样的城市", history=[]) # Warm up for JIT
+_, _ = model_2.chat(tokenizer_2, "北京是一个怎样的城市", history=[]) # Warm up for JIT
+"""
 
 print(model_1.device)
 print(model_2.device)
@@ -115,6 +121,10 @@ def predict_1(input, chatbot, history):
     model_1.past_key_values = None
     # warm up
     response, history = model_1.chat(tokenizer_1, input, history=[])
+    model_1.transformer.duration = 0
+    model_1.transformer.first_token_latency = 0
+    model_1.transformer.forward_count = 0
+    model_1.past_key_values = None
     for response, history in model_1.stream_chat(tokenizer_1, input, history=[]):
         chatbot[-1] = (parse_text(input), parse_text(response))   
         yield chatbot, history, "……", "……"
@@ -137,6 +147,10 @@ def predict_2(input, chatbot, history):
     model_2.past_key_values = None
     # warm up
     response, history = model_2.chat(tokenizer_2, input, history=[])
+    model_2.transformer.duration = 0
+    model_2.transformer.first_token_latency = 0
+    model_2.transformer.forward_count = 0
+    model_2.past_key_values = None
     for response, history in model_2.stream_chat(tokenizer_2, input, history=[]):
         chatbot[-1] = (parse_text(input), parse_text(response))   
         yield chatbot, history, "……", "……"
@@ -167,6 +181,10 @@ def autotest_1(chatbot, history):
         model_1.past_key_values = None
         # warm up
         response, history = model_1.chat(tokenizer_1, input, history=[])
+        model_1.transformer.duration = 0
+        model_1.transformer.first_token_latency = 0
+        model_1.transformer.forward_count = 0
+        model_1.past_key_values = None
         for response, history in model_1.stream_chat(tokenizer_1, input, history=[]):
             chatbot[-1] = (parse_text(input), parse_text(response))  
             yield chatbot, history, "……", "……" 
@@ -203,6 +221,10 @@ def autotest_2(chatbot, history):
         model_2.past_key_values = None
         # warm up
         response, history = model_2.chat(tokenizer_2, input, history=[])
+        model_2.transformer.duration = 0
+        model_2.transformer.first_token_latency = 0
+        model_2.transformer.forward_count = 0
+        model_2.past_key_values = None
         for response, history in model_2.stream_chat(tokenizer_2, input, history=[]):
             chatbot[-1] = (parse_text(input), parse_text(response))   
             yield chatbot, history, "……", "……"
