@@ -6,12 +6,11 @@ import os
 import yaml
 import time
 # from threading import Thread
-from model.modeling_chatglm import ChatGLMForConditionalGenerationByte
+from model.xformer_chatglm import ChatGLMForConditionalGenerationXformer
 from model.baseline_chatglm import ChatGLMForConditionalGeneration
 from model.configuration_chatglm import ChatGLMConfig
 
 model_name = "THUDM/chatglm-6b"
-torch.ops.load_library('./lib/libths_bytetransformer.so')
 torch.random.manual_seed(999)
 
 def load_parameter(model_name: str, engine_use: bool):
@@ -27,29 +26,20 @@ def load_parameter(model_name: str, engine_use: bool):
         use_cache=True,
         vocab_size=130528,
         model_type="chatglm",
-        torch_dtype="float16",
-        # switch on the accelerating engine
-        # engine_use=args.engine_use,
-        # tiny=tiny_bool
-    )
-
+        torch_dtype="float16"
+    )   
+    state_dict = model.state_dict()
     if engine_use:
-        configuration.engine_use = True
-        new_model = ChatGLMForConditionalGenerationByte(configuration)
+        new_model = ChatGLMForConditionalGenerationXformer(configuration).eval()
+        for i in range(configuration.num_layers):
+            state_dict[f'transformer.layers.{i}.mlp.dense_h_to_4h_act.weight'] = state_dict.pop(f'transformer.layers.{i}.mlp.dense_h_to_4h.weight')
+            state_dict[f'transformer.layers.{i}.mlp.dense_h_to_4h_act.bias'] = state_dict.pop(f'transformer.layers.{i}.mlp.dense_h_to_4h.bias')
     else:
-        new_model = ChatGLMForConditionalGeneration(configuration)
-    
-    new_model.load_state_dict(model.state_dict(), strict=True)
+        new_model = ChatGLMForConditionalGeneration(configuration).eval()
 
-    return new_model
+    new_model.load_state_dict(state_dict, strict=True)
+    return new_model.half().cuda()
 
-# print(model_2.transformer.layers[0].attention_query_key_value_weight.shape)
-# print(model_2.transformer.layers[0].attention.query_key_value.weight.shape)
-# for i in range(configuration.num_layers):
-#     model_2.transformer.layers[i].attention_query_key_value_weight = model_2.transformer.layers[i].attention.query_key_value.weight.transpose(0, 1).contiguous()
-#     model_2.transformer.layers[i].attention_dense_weight = model_2.transformer.layers[i].attention.dense.weight.transpose(0, 1).contiguous()
-#     model_2.transformer.layers[i].dense_h_to_4h_weight = model_2.transformer.layers[i].mlp.dense_h_to_4h.weight.transpose(0, 1).contiguous()
-#     model_2.transformer.layers[i].dense_4h_to_h_weight = model_2.transformer.layers[i].mlp.dense_4h_to_h.weight.transpose(0, 1).contiguous()
 
 tokenizer_1 = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 model_1 = load_parameter(model_name, False)
@@ -123,6 +113,8 @@ def predict_1(input, chatbot, history):
     model_1.transformer.first_token_latency = 0
     model_1.transformer.forward_count = 0
     model_1.past_key_values = None
+    # warm up
+    response, history = model_1.chat(tokenizer_1, input, history=[])
     for response, history in model_1.stream_chat(tokenizer_1, input, history=[]):
         chatbot[-1] = (parse_text(input), parse_text(response))   
         yield chatbot, history, "……", "……"
@@ -143,6 +135,8 @@ def predict_2(input, chatbot, history):
     model_2.transformer.first_token_latency = 0
     model_2.transformer.forward_count = 0
     model_2.past_key_values = None
+    # warm up
+    response, history = model_2.chat(tokenizer_2, input, history=[])
     for response, history in model_2.stream_chat(tokenizer_2, input, history=[]):
         chatbot[-1] = (parse_text(input), parse_text(response))   
         yield chatbot, history, "……", "……"
@@ -163,7 +157,7 @@ def autotest_1(chatbot, history):
     for test_i in range(7):
         time.sleep(2.0)
         file_name = os.path.join(dir, file_list[test_i])
-        f = open(file_name, 'r')
+        f = open(file_name, 'r', encoding='utf-8')
         file = yaml.load(f, Loader=yaml.FullLoader)
         input = file[0]
         chatbot.append((parse_text(input), ""))
@@ -171,6 +165,8 @@ def autotest_1(chatbot, history):
         model_1.transformer.first_token_latency = 0
         model_1.transformer.forward_count = 0
         model_1.past_key_values = None
+        # warm up
+        response, history = model_1.chat(tokenizer_1, input, history=[])
         for response, history in model_1.stream_chat(tokenizer_1, input, history=[]):
             chatbot[-1] = (parse_text(input), parse_text(response))  
             yield chatbot, history, "……", "……" 
@@ -197,7 +193,7 @@ def autotest_2(chatbot, history):
     for test_i in range(7):
         time.sleep(2.0)
         file_name = os.path.join(dir, file_list[test_i])
-        f = open(file_name, 'r')
+        f = open(file_name, 'r', encoding='utf-8')
         file = yaml.load(f, Loader=yaml.FullLoader)
         input = file[0]
         chatbot.append((parse_text(input), ""))
@@ -205,6 +201,8 @@ def autotest_2(chatbot, history):
         model_2.transformer.first_token_latency = 0
         model_2.transformer.forward_count = 0
         model_2.past_key_values = None
+        # warm up
+        response, history = model_2.chat(tokenizer_2, input, history=[])
         for response, history in model_2.stream_chat(tokenizer_2, input, history=[]):
             chatbot[-1] = (parse_text(input), parse_text(response))   
             yield chatbot, history, "……", "……"
