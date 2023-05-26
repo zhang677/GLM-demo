@@ -1,5 +1,6 @@
 from transformers import AutoTokenizer, AutoModel
 from model.xformer_chatglm import ChatGLMForConditionalGenerationXformer
+from model.xformer_chatglm import change_config
 from model.baseline_chatglm import ChatGLMForConditionalGeneration
 from model.configuration_chatglm import ChatGLMConfig
 import argparse
@@ -58,7 +59,6 @@ def load_parameter(model_name: str, engine_use: bool):
     state_dict = model.state_dict()
     if engine_use:
         new_model = ChatGLMForConditionalGenerationXformer(configuration).eval()
-        state_dict = model.state_dict()
         for i in range(configuration.num_layers):
             state_dict[f'transformer.layers.{i}.mlp.dense_h_to_4h_act.weight'] = state_dict.pop(f'transformer.layers.{i}.mlp.dense_h_to_4h.weight')
             state_dict[f'transformer.layers.{i}.mlp.dense_h_to_4h_act.bias'] = state_dict.pop(f'transformer.layers.{i}.mlp.dense_h_to_4h.bias')
@@ -111,5 +111,22 @@ if __name__ == '__main__':
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     model = load_parameter(model_name, args.engine_use)
+    model.transformer.duration = 0
+    model.transformer.first_token_latency = 0
+    model.transformer.forward_count = 0
+    model.past_key_values = None
+    change_config(128, 128, 32)
+    # torch.cuda.cudart().cudaProfilerStart()
     response, history = model.chat(tokenizer, parse_text(string), history=[])
+    # torch.cuda.cudart().cudaProfilerStop()
+    print("=======================================================")
+    model.transformer.duration = 0
+    model.transformer.first_token_latency = 0
+    model.transformer.forward_count = 0
+    model.past_key_values = None
+    #torch.cuda.cudart().cudaProfilerStart()
+    change_config(128, 128, 32)
+    response, history = model.chat(tokenizer, parse_text(string), history=[])
+    #torch.cuda.cudart().cudaProfilerStop()
+    
     print(response)

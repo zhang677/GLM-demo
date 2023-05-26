@@ -55,6 +55,15 @@ CHATGLM_6B_PRETRAINED_MODEL_ARCHIVE_LIST = [
     # See all ChatGLM-6B models at https://huggingface.co/models?filter=chatglm
 ]
 
+SET_BLOCK_M = 128
+SET_BLOCK_N = 128
+SET_BLOCK_K = 32
+
+def change_config(M, N, K):
+    global SET_BLOCK_M, SET_BLOCK_N, SET_BLOCK_K
+    SET_BLOCK_M = M
+    SET_BLOCK_N = N
+    SET_BLOCK_K = K
 
 class InvalidScoreLogitsProcessor(LogitsProcessor):
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
@@ -434,13 +443,13 @@ def xformer_efficient_attention_fn(
 
         # Find the minimal multiple of 8 that is larger than the sequence length
         mask_shape = (attention_mask.shape[0], 1, 8 * math.ceil(q_seq_len / 8), 8 * math.ceil(q_seq_len / 8))
-        xformer_attention_mask = torch.zeros(mask_shape, dtype=key_layer.dtype, device=key_layer.device)
+        xformer_attention_mask = torch.zeros(mask_shape, dtype=key_layer.dtype, device=key_layer.device, requires_grad=False)
         mask_ids = torch.nonzero(attention_mask)
         xformer_attention_mask[mask_ids[:,0], :, mask_ids[:,2], mask_ids[:,3]] = float('-inf')
         del attention_mask
         torch.cuda.empty_cache()
         xformer_attention_mask = xformer_attention_mask.expand(b, num_attention_heads, mask_shape[2], mask_shape[3])[:,:,:q_seq_len,:q_seq_len]
-        context_layer = xops.memory_efficient_attention(query_layer, key_layer, value_layer, attn_bias=xformer_attention_mask, op = (xops.fmha.cutlass.FwOp, None)).transpose(0, 1).view(q_seq_len, b, hidden_size_per_partition)
+        context_layer = xops.memory_efficient_attention(query_layer, key_layer, value_layer, attn_bias=xformer_attention_mask, op = (xops.fmha.cutlass.FwOp, xops.fmha.cutlass.BwOp)).transpose(0, 1).view(q_seq_len, b, hidden_size_per_partition)
         # context_layer = xops.memory_efficient_attention(query_layer, key_layer, value_layer, attn_bias=xops.LowerTriangularMask()).view(q_seq_len, b, hidden_size_per_partition)
     else:
         context_layer = xops.memory_efficient_attention(query_layer, key_layer, value_layer).transpose(0, 1).view(q_seq_len, b, hidden_size_per_partition)
@@ -676,7 +685,8 @@ class GLU(torch.nn.Module):
 
         # intermediate_parallel = self.activation_func(intermediate_parallel)
 
-        intermediate_parallel = self.dense_h_to_4h_act(hidden_states)
+        # intermediate_parallel = self.dense_h_to_4h_act(hidden_states)
+        intermediate_parallel = self.dense_h_to_4h_act.forward_direct(hidden_states, SET_BLOCK_M=SET_BLOCK_M, SET_BLOCK_N=SET_BLOCK_N, SET_BLOCK_K=SET_BLOCK_K)
 
         output = self.dense_4h_to_h(intermediate_parallel)
 
@@ -1186,6 +1196,7 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
             print("--------------------------------")
             print("prefill stage: %.4f ms" % (dur))
             print("--------------------------------")
+            change_config(32, 64, 64)
         print("forward count: %d [whole dur: %.4f ms]" % (self.forward_count, self.duration))
         
         return BaseModelOutputWithPast(
