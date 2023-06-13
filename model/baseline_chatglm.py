@@ -444,8 +444,12 @@ class SelfAttention(torch.nn.Module):
         """
 
         # [seq_len, batch, 3 * hidden_size]
+        t0 = time.time()
         mixed_raw_layer = self.query_key_value(hidden_states)
+        t1 = time.time()
+        print("QKV Linear: %.6f ms" % ((t1 - t0) * 1000))
 
+        t0 = time.time()
         # [seq_len, batch, 3 * hidden_size] --> [seq_len, batch, num_attention_heads, 3 * hidden_size_per_attention_head]
         new_tensor_shape = mixed_raw_layer.size()[:-1] + (
             self.num_attention_heads_per_partition,
@@ -484,7 +488,9 @@ class SelfAttention(torch.nn.Module):
             layer_past=layer_past,
             use_cache=use_cache
         )
-
+        t1 = time.time()
+        print("Attention + softmax: %.6f ms" % ((t1 - t0)* 1000))
+        self._weighted_sum_start = time.time()
         output = self.dense(context_layer)
 
         outputs = (output, present)
@@ -537,6 +543,7 @@ class GLU(torch.nn.Module):
             bias=bias,
             dtype=params_dtype,
         )
+        self._4h_to_h_start = 0
 
     def forward(self, hidden_states):
         """
@@ -544,10 +551,14 @@ class GLU(torch.nn.Module):
         """
 
         # [seq_len, batch, inner_hidden_size]
+        t0 = time.time()
         intermediate_parallel = self.dense_h_to_4h(hidden_states)
 
         intermediate_parallel = self.activation_func(intermediate_parallel)
+        t1 = time.time()
+        print("h-to-4h + bias + GELU: %.6f ms" % ((t1 - t0)*1000))
 
+        self._4h_to_h_start = time.time()
         output = self.dense_4h_to_h(intermediate_parallel)
 
         return output
@@ -623,7 +634,10 @@ class GLMBlock(torch.nn.Module):
 
         # Layer norm at the begining of the transformer layer.
         # [seq_len, batch, hidden_size]
+        t0 = time.time()
         attention_input = self.input_layernorm(hidden_states)
+        t1 = time.time()
+        print("Input LayerNorm: %.6f ms" % ((t1 - t0) * 1000))
 
         # Self attention.
         attention_outputs = self.attention(
@@ -639,18 +653,21 @@ class GLMBlock(torch.nn.Module):
         attention_output = attention_outputs[0]
 
         outputs = attention_outputs[1:]
-
         # Residual connection.
         alpha = (2 * self.num_layers) ** 0.5
         hidden_states = attention_input * alpha + attention_output
 
         mlp_input = self.post_attention_layernorm(hidden_states)
+        t1 = time.time()
+        print("Weighted sum + Add bias + residual + layernorm: %.6f ms" % ((t1 - self.attention._weighted_sum_start) * 1000))
 
         # MLP.
         mlp_output = self.mlp(mlp_input)
 
         # Second residual connection.
         output = mlp_input * alpha + mlp_output
+        t1 = time.time()
+        print("4h-to-h + Add bias + residual: %.6f ms" % ((t1 - self.mlp._4h_to_h_start) * 1000))
 
         if use_cache:
             outputs = (output,) + outputs
@@ -974,7 +991,8 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
             attention_mask = attention_mask.to(hidden_states.device)
 
         if self.forward_count == 1:
-            print("seq len: ", hidden_states.size(0))
+            self.real_seq_len = hidden_states.size(0)
+            # print("seq len: ", hidden_states.size(0))
 
         for i, layer in enumerate(self.layers):
 
@@ -1024,15 +1042,17 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
         torch.cuda.synchronize()
         end = time.time()
         dur = (end - start) * 1000
-        if self.forward_count <= 3:
-            self.duration += dur
+        self.duration += dur
+        # Record the duration of the first token
+        # if self.forward_count <= 3:
+        #     self.duration += dur
         if self.forward_count <= 2:
             self.first_token_latency += dur
-        if self.forward_count == 1:
-            print("--------------------------------")
-            print("prefill stage: %.4f ms" % (dur))
-            print("--------------------------------")
-        print("forward count: %d [whole dur: %.4f ms]" % (self.forward_count, self.duration))
+        # if self.forward_count == 1:
+            # print("--------------------------------")
+            # print("prefill stage: %.4f ms" % (dur))
+            # print("--------------------------------")
+        # print("forward count: %d [whole dur: %.4f ms]" % (self.forward_count, self.duration))
 
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
@@ -1300,8 +1320,8 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
         response = tokenizer.decode(outputs)
         response = self.process_response(response)
         history = history + [(query, response)]
-        print("end to end: %.4f ms" % (self.transformer.duration))
-        print("--------------------------------")
+        # print("end to end: %.4f ms" % (self.transformer.duration))
+        # print("--------------------------------")
         return response, history
 
     @torch.no_grad()
@@ -1329,7 +1349,8 @@ class ChatGLMForConditionalGeneration(ChatGLMPreTrainedModel):
             response = self.process_response(response)
             new_history = history + [(query, response)]
             yield response, new_history
-        print("end to end: %.4f ms" % (self.transformer.duration))
+        print("seq len: %d" % (self.transformer.real_seq_len))
+        print("torch end to end: %.4f ms" % (self.transformer.duration))
         print("--------------------------------")
 
     @torch.no_grad()

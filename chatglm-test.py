@@ -104,9 +104,10 @@ if __name__ == '__main__':
         print(file_list)
         file_name = os.path.join('./case', file_list[args.test_case])
         case_id = 0
-    f = open(file_name, 'r')
+    f = open(file_name, 'r', encoding='utf-8')
     file = yaml.load(f, Loader=yaml.FullLoader)
     string = file[case_id]
+    # string = "北京是一个怎样的城市"
     model_name = "THUDM/chatglm-6b"
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
@@ -115,7 +116,7 @@ if __name__ == '__main__':
     model.transformer.first_token_latency = 0
     model.transformer.forward_count = 0
     model.past_key_values = None
-    change_config(128, 128, 32)
+    # change_config(32, 64, 64)
     # torch.cuda.cudart().cudaProfilerStart()
     response, history = model.chat(tokenizer, parse_text(string), history=[])
     # torch.cuda.cudart().cudaProfilerStop()
@@ -124,9 +125,9 @@ if __name__ == '__main__':
     model.transformer.first_token_latency = 0
     model.transformer.forward_count = 0
     model.past_key_values = None
-    #torch.cuda.cudart().cudaProfilerStart()
-    change_config(128, 128, 32)
+    # torch.cuda.cudart().cudaProfilerStart()
+    change_config(32, 64, 64)
     response, history = model.chat(tokenizer, parse_text(string), history=[])
-    #torch.cuda.cudart().cudaProfilerStop()
+    # torch.cuda.cudart().cudaProfilerStop()
     
     print(response)

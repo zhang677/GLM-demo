@@ -191,9 +191,11 @@ def autotest_1(chatbot, history):
         history = []
         end_to_end = model_1.transformer.duration
         first_token = model_1.transformer.first_token_latency
+        # print(f"model_1: {first_token}, {end_to_end}")
         e_list.append(end_to_end)
         f_list.append(first_token)
         yield chatbot, history, end_to_end, first_token
+    print("==================================")
     e_mean = sum(e_list) / len(e_list)
     f_mean = sum(f_list) / len(f_list)
     yield chatbot, history, e_mean, f_mean
@@ -206,7 +208,7 @@ def autotest_2(chatbot, history):
     yield chatbot, history, "……", "……"
     e_list = []
     f_list = []
-    dir = './test_case'
+    dir = './case'
     file_list = os.listdir(dir)
     for test_i in range(7):
         time.sleep(2.0)
@@ -231,11 +233,13 @@ def autotest_2(chatbot, history):
         history = []
         end_to_end = model_2.transformer.duration
         first_token = model_2.transformer.first_token_latency
+        # print(f"model_2: {first_token}, {end_to_end}")
         e_list.append(end_to_end)
         f_list.append(first_token)
         yield chatbot, history, end_to_end, first_token
     e_mean = sum(e_list) / len(e_list)
     f_mean = sum(f_list) / len(f_list)
+    print("==================================")
     yield chatbot, history, e_mean, f_mean
     return 
 

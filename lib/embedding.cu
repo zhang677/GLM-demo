@@ -59,5 +59,3 @@ void embedding_apply_wrapper(at::Tensor q, at::Tensor k,
   embedding_kernel<<<dim3(seq_len * hn), dim3(hs)>>>
     (hn, hs, id_ptr, q_ptr, k_ptr, cos_ptr, sin_ptr);
 }
-
-

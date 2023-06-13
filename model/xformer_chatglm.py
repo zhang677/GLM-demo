@@ -55,7 +55,7 @@ CHATGLM_6B_PRETRAINED_MODEL_ARCHIVE_LIST = [
     # See all ChatGLM-6B models at https://huggingface.co/models?filter=chatglm
 ]
 
-SET_BLOCK_M = 128
+SET_BLOCK_M = 64
 SET_BLOCK_N = 128
 SET_BLOCK_K = 32
 
@@ -685,8 +685,8 @@ class GLU(torch.nn.Module):
 
         # intermediate_parallel = self.activation_func(intermediate_parallel)
 
-        # intermediate_parallel = self.dense_h_to_4h_act(hidden_states)
-        intermediate_parallel = self.dense_h_to_4h_act.forward_direct(hidden_states, SET_BLOCK_M=SET_BLOCK_M, SET_BLOCK_N=SET_BLOCK_N, SET_BLOCK_K=SET_BLOCK_K)
+        intermediate_parallel = self.dense_h_to_4h_act(hidden_states)
+        # intermediate_parallel = self.dense_h_to_4h_act.forward_direct(hidden_states, SET_BLOCK_M=SET_BLOCK_M, SET_BLOCK_N=SET_BLOCK_N, SET_BLOCK_K=SET_BLOCK_K)
 
         output = self.dense_4h_to_h(intermediate_parallel)
 
@@ -1058,7 +1058,7 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
 
         torch.cuda.synchronize()
         start = time.time()
-        
+
         self.forward_count += 1
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -1138,7 +1138,8 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
             attention_mask = attention_mask.to(hidden_states.device)
         
         if self.forward_count == 1:
-            print("seq len: ", hidden_states.size(0))
+            self.real_seq_len = hidden_states.size(0)
+            # print("seq len: ", hidden_states.size(0))
 
         for i, layer in enumerate(self.layers):
 
@@ -1188,16 +1189,19 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
         torch.cuda.synchronize()
         end = time.time()
         dur = (end - start) * 1000
-        if self.forward_count <= 3:
-            self.duration += dur
+        # Record the total duration
+        self.duration += dur
+        # Record the duration of the first token
+        # if self.forward_count <= 3:
+        #     self.duration += dur
         if self.forward_count <= 2:
             self.first_token_latency += dur
-        if self.forward_count == 1:
-            print("--------------------------------")
-            print("prefill stage: %.4f ms" % (dur))
-            print("--------------------------------")
-            change_config(32, 64, 64)
-        print("forward count: %d [whole dur: %.4f ms]" % (self.forward_count, self.duration))
+        # if self.forward_count == 1:
+        #     print("--------------------------------")
+        #     print("prefill stage: %.4f ms" % (dur))
+        #     print("--------------------------------")
+        #     change_config(32, 64, 64)
+        # print("forward count: %d [whole dur: %.4f ms]" % (self.forward_count, self.duration))
         
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
@@ -1495,7 +1499,8 @@ class ChatGLMForConditionalGenerationXformer(ChatGLMPreTrainedModel):
             response = self.process_response(response)
             new_history = history + [(query, response)]
             yield response, new_history
-        print("end to end: %.4f ms" % (self.transformer.duration))
+        print("seq len %d" % (self.transformer.real_seq_len))
+        print("xformer end to end: %.4f ms" % (self.transformer.duration))
         print("--------------------------------")
 
     @torch.no_grad()
